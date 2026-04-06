@@ -35,9 +35,140 @@ NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/
 - **Mapping management** — View and manage collection-notebook mappings
 - **Reset sync state** — Clear sync history to re-sync items
 
-## Architecture
+## Requirements
 
-NZBridge consists of two components:
+Before installing NZBridge, make sure you have:
+
+- **Zotero 7.0 or later** — Download from [zotero.org](https://www.zotero.org/download/)
+- **Google Chrome or Microsoft Edge** (version 116+) — Manifest V3 support is required
+- **A Google account** with access to [NotebookLM](https://notebooklm.google.com/)
+
+## Installation
+
+NZBridge has **two components** that work together — you need to install both:
+
+| Component | What it does |
+|-----------|-------------|
+| **Zotero Plugin** | Runs inside Zotero, exposing your collections and items via a local HTTP server |
+| **Browser Extension** | Runs in Chrome/Edge, providing the popup UI and automating sync with NotebookLM |
+
+### Step 1 — Install the Zotero Plugin
+
+1. Download the latest `nz-bridge.xpi` file from the [Releases](https://github.com/yourusername/nzbridge/releases) page
+
+   ![The nz-bridge.xpi file](docs/12-xpi-file.png)
+
+2. Open Zotero and go to **Tools > Plugins**
+
+   ![Zotero menu — Tools > Plugins](docs/09-zotero-tools-plugins.png)
+
+3. In the Plugins Manager, click the **gear icon** (⚙) in the top-right corner
+
+   ![Gear icon menu](docs/11-zotero-install-from-file.png)
+
+4. Select **Install Plugin From File...**
+
+5. Browse to the downloaded `nz-bridge.xpi` file and click **Open**
+
+6. NZBridge will appear in the Plugins Manager as enabled — restart Zotero if prompted
+
+   ![NZBridge installed in Plugins Manager](docs/10-zotero-plugins-manager.png)
+
+The plugin starts a local HTTP server automatically whenever Zotero is running. No additional configuration is needed.
+
+> **Building from source** (optional):
+> ```bash
+> cd zotero-plugin
+> npm install
+> npm run build
+> ```
+> The built `.xpi` will be at `zotero-plugin/.scaffold/build/nz-bridge.xpi`
+
+### Step 2 — Install the Browser Extension
+
+#### Option A: From the store (recommended)
+- **Edge**: Install from the [Edge Add-ons Store](https://microsoftedge.microsoft.com/addons/) (search for "NZBridge")
+- **Chrome**: Coming soon on the Chrome Web Store
+
+#### Option B: Load unpacked (for development)
+1. Download or clone this repository
+2. Open your browser and navigate to the extensions page:
+   - **Chrome**: `chrome://extensions/`
+   - **Edge**: `edge://extensions/`
+3. Enable **Developer mode** (toggle in the top-right corner)
+4. Click **Load unpacked**
+5. Select the `browser-extension/` folder from this repository
+6. The NZBridge icon will appear in your toolbar — pin it for easy access
+
+## Usage
+
+### Forward Sync — Push sources from Zotero to NotebookLM
+
+Upload PDFs and URLs from a Zotero collection as sources in a NotebookLM notebook.
+
+1. Make sure **Zotero is running** with the NZBridge plugin installed
+2. Open [NotebookLM](https://notebooklm.google.com/) in your browser and create or open a notebook
+3. Click the **NZBridge extension icon** in your toolbar
+4. In the **"To NotebookLM"** tab, select a Zotero collection from the dropdown
+5. Review the item preview — it shows how many PDFs and URLs will be synced
+
+   ![NZBridge popup — collection selected, ready to sync](docs/01-forward-sync-ready.png)
+
+6. Click **"Sync to NotebookLM"** — the progress bar will show the current status
+
+   ![Sync in progress](docs/03-forward-sync-progress.png)
+
+7. NZBridge will automatically:
+   - Name the notebook after your Zotero collection (if untitled)
+   - Upload local PDFs via drag-and-drop
+   - Paste URLs as web sources in batch
+   - Skip any items already synced
+
+   ![Sync complete — 3 items synced](docs/02-forward-sync-done.png)
+
+8. Your sources now appear in NotebookLM, ready for AI-powered analysis
+
+   ![Sources uploaded in NotebookLM](docs/04-notebooklm-sources.png)
+
+9. You can start chatting with your sources right away
+
+   ![NotebookLM Chat with uploaded sources](docs/05-notebooklm-chat.png)
+
+> **Tip:** NotebookLM supports a maximum of **50 sources** per notebook. If your collection is larger, split it into sub-collections.
+
+### Backward Sync — Pull notes from NotebookLM to Zotero
+
+Extract saved notes from NotebookLM's Studio panel and import them into Zotero as document items with child notes.
+
+1. Open a NotebookLM notebook that has **saved notes** in the Studio panel
+2. Click the **NZBridge extension icon**
+3. Go to the **"To Zotero"** tab
+4. Select a **target Zotero collection** from the dropdown
+5. Optionally add **custom tags** (comma-separated)
+6. Click **"Find Text Notes"** — NZBridge will scan the Studio panel for saved notes
+7. Select or deselect individual notes as needed
+
+   ![Found notes in the "To Zotero" tab](docs/06-backward-sync-notes.png)
+
+8. Click **"Import Selected"**
+9. Each note appears in Zotero as a **Document** parent item with a child note containing the full content
+
+   ![Imported document item in Zotero library](docs/07-zotero-library.png)
+
+10. The child note contains the complete note text with rich formatting, metadata, and tags
+
+    ![Full note content in Zotero](docs/08-zotero-note-detail.png)
+
+> **Tip:** Imported notes are created as Document parent items, making them compatible with sync tools like [Notero](https://github.com/dvanoni/notero) for Notion integration.
+
+### Managing Mappings
+
+The **"Mappings"** tab shows all collection-notebook links that NZBridge has created. From here you can:
+- View which Zotero collection is linked to which NotebookLM notebook
+- Delete a mapping to unlink them
+- Use the **Reset** button in the "To NotebookLM" tab to clear sync history and re-sync items
+
+## Architecture
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
@@ -45,60 +176,6 @@ NZBridge consists of two components:
 | **Browser Extension** | Chrome MV3 extension | UI popup + background service worker that orchestrates sync via DOM scripting |
 
 The browser extension communicates with the Zotero plugin via `localhost:23119` (Zotero's built-in HTTP server).
-
-## Installation
-
-### Zotero Plugin
-
-1. Open Zotero 7 or later
-2. Go to **Tools > Add-ons**
-3. Click the gear icon > **Install Add-on From File...**
-4. Select the `.xpi` file from `zotero-plugin/.scaffold/build/`
-5. Restart Zotero
-
-To build from source:
-```bash
-cd zotero-plugin
-npm install
-npm run build
-```
-
-### Browser Extension
-
-1. Open Chrome and navigate to `chrome://extensions/`
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Select the `browser-extension/` folder
-5. Pin the NZBridge extension to your toolbar
-
-## Usage
-
-### Forward Sync (Push to NotebookLM)
-
-1. Open a notebook in [NotebookLM](https://notebooklm.google.com/)
-2. Click the NZBridge extension icon
-3. In the **To NotebookLM** tab, select a Zotero collection
-4. Review the item preview (PDFs and URLs)
-5. Click **Sync to NotebookLM**
-6. The notebook will be auto-named after your collection (if untitled)
-
-### Backward Sync (Pull from NotebookLM)
-
-1. Open a notebook in NotebookLM with saved notes in the Studio panel
-2. Click the NZBridge extension icon
-3. Go to the **To Zotero** tab
-4. Select a target Zotero collection
-5. Optionally add custom tags
-6. Click **Find Text Notes** to scan for available notes
-7. Select/deselect notes as needed
-8. Click **Import Selected**
-
-### Tips
-
-- **Reset sync** if you need to re-upload sources that were previously synced
-- NotebookLM supports a **maximum of 50 sources** per notebook — use sub-collections for larger libraries
-- Imported notes appear as **Document** items in Zotero with attached child notes, making them compatible with other sync tools (e.g., Notion)
-- The extension works on both **wide monitors** (3-column layout) and **narrow/vertical monitors** (collapsed tab layout)
 
 ## Permissions
 
@@ -126,11 +203,15 @@ npm run build    # Production build
 ### Browser Extension
 No build step required — load `browser-extension/` directly as an unpacked extension. Edit files and reload the extension from `chrome://extensions/`.
 
-## Requirements
+## Troubleshooting
 
-- **Zotero** 7.0 or later
-- **Chrome** 116 or later (Manifest V3 support)
-- A [Google NotebookLM](https://notebooklm.google.com/) account
+| Problem | Solution |
+|---------|----------|
+| Red dot (disconnected) in popup | Make sure Zotero is running with NZBridge installed |
+| "Cannot connect to Zotero" error | Check that no firewall is blocking `localhost:23119` |
+| PDFs not uploading | Ensure the NotebookLM tab is active and the notebook is open |
+| No notes found during import | Open the Studio panel in NotebookLM and make sure you have saved notes (not just chat responses) |
+| Sources exceed 50 limit | Split your Zotero collection into smaller sub-collections |
 
 ## License
 
