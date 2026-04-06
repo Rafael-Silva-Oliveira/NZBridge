@@ -90,7 +90,7 @@ The plugin starts a local HTTP server automatically whenever Zotero is running. 
 ### Step 2 — Install the Browser Extension
 
 #### Option A: From the store (recommended)
-- **Edge**: Install from the [Edge Add-ons Store](https://microsoftedge.microsoft.com/addons/) (search for "NZBridge")
+- **Edge**: Install from the [Edge Add-ons Store] - Coming soon!
 - **Chrome**: Coming soon on the Chrome Web Store
 
 #### Option B: Load unpacked (for development)
@@ -98,9 +98,9 @@ The plugin starts a local HTTP server automatically whenever Zotero is running. 
 2. Open your browser and navigate to the extensions page:
    - **Chrome**: `chrome://extensions/`
    - **Edge**: `edge://extensions/`
-3. Enable **Developer mode** (toggle in the top-right corner)
+3. Enable **Developer mode**
 4. Click **Load unpacked**
-5. Select the `browser-extension/` folder from this repository
+5. Select the `browser-extension/` folder from this repository (unzip the `Source code (zip)` file in the releases)
 6. The NZBridge icon will appear in your toolbar — pin it for easy access
 
 ## Usage
