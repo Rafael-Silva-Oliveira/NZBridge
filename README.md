@@ -54,7 +54,7 @@ NZBridge has **two components** that work together — you need to install both:
 
 ### Step 1 — Install the Zotero Plugin
 
-1. Download the latest `nz-bridge.xpi` file from the [Releases](https://github.com/yourusername/nzbridge/releases) page
+1. Download the latest `nz-bridge.xpi` file from the [Releases](https://github.com/Rafael-Silva-Oliveira/NZBridge/releases) page
 
    ![The nz-bridge.xpi file](docs/12-xpi-file.png)
 
