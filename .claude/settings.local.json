@@ -52,7 +52,10 @@
       "Bash(mv \"Screenshot 2026-04-06 132557.png\" \"02-forward-sync-done.png\")",
       "Bash(mv \"Screenshot 2026-04-06 132647.png\" \"03-forward-sync-progress.png\")",
       "Bash(mv \"Screenshot 2026-04-06 132720.png\" \"04-notebooklm-sources.png\")",
-      "Bash(mv \"Screenshot 2026-04-06 132747.png\" \"05-notebooklm-chat.png\")"
+      "Bash(mv \"Screenshot 2026-04-06 132747.png\" \"05-notebooklm-chat.png\")",
+      "Bash(npm list:*)",
+      "Bash(npm root:*)",
+      "Bash(npm uninstall:*)"
     ]
   }
 }
