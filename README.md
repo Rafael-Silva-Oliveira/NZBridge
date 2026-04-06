@@ -1,14 +1,17 @@
-# NZBridge — NotebookLM Zotero Bridge
+<p align="center">
+  <img src="docs/social-preview.png" alt="NZBridge — NotebookLM Zotero Bridge" width="640">
+</p>
 
-<a href="https://buymeacoffee.com/rafaeloliveira" target="_blank">
-  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50">
-</a>
-
-**The maintenance and development of NZBridge depends on community support. If you find it useful, please consider buying me a coffee!**
 
 ---
 
 NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/) and [Google NotebookLM](https://notebooklm.google.com/). Push your research library into NotebookLM for AI-powered analysis, then pull your generated notes back into Zotero — all without leaving your browser.
+
+## Demo
+
+[![Watch the demo on YouTube](https://img.shields.io/badge/YouTube-Watch%20Demo-red?style=for-the-badge&logo=youtube)](https://www.youtube.com/watch?v=RCJhwf-Kwto)
+
+> See NZBridge in action — full walkthrough of forward sync, backward sync, and the Zotero plugin installation.
 
 ## Features
 
