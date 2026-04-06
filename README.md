@@ -89,15 +89,15 @@ The plugin starts a local HTTP server automatically whenever Zotero is running. 
 
 ### Step 2 — Install the Browser Extension
 
-#### Option A: From the store (recommended)
+#### Option A: From the store
 - **Edge**: Install from the [Edge Add-ons Store] - Coming soon!
 - **Chrome**: Coming soon on the Chrome Web Store
 
-#### Option B: Load unpacked (for development)
+#### Option B: Load unpacked 
 1. Download or clone this repository
 2. Open your browser and navigate to the extensions page:
-   - **Chrome**: `chrome://extensions/`
    - **Edge**: `edge://extensions/`
+   - **Chrome**: `chrome://extensions/`
 3. Enable **Developer mode**
 4. Click **Load unpacked**
 5. Select the `browser-extension/` folder from this repository (unzip the `Source code (zip)` file in the releases)
