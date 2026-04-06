@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NZBridge</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <h1>NZBridge</h1>
+    <span id="status-dot" class="dot disconnected"></span>
+  </header>
+
+  <!-- Connection error -->
+  <div id="error-banner" class="banner error hidden">
+    Cannot connect to Zotero. Is it running with NZBridge installed?
+  </div>
+
+  <!-- Tab navigation -->
+  <nav class="tabs">
+    <button class="tab active" data-tab="sync">To NotebookLM</button>
+    <button class="tab" data-tab="import">To Zotero</button>
+    <button class="tab" data-tab="mappings">Mappings</button>
+    <button class="tab" data-tab="updates">Updates</button>
+  </nav>
+
+  <!-- Tab: Forward Sync -->
+  <section id="tab-sync" class="tab-content active">
+    <p class="tab-description">Upload PDFs and URLs from a Zotero collection as sources in NotebookLM.</p>
+    <div class="field">
+      <label for="collection-select">Zotero Collection</label>
+      <select id="collection-select">
+        <option value="">Loading...</option>
+      </select>
+    </div>
+    <div id="item-preview" class="item-preview hidden">
+      <div id="item-summary" class="info-text"></div>
+    </div>
+    <div class="field">
+      <label>NotebookLM Notebook</label>
+      <div id="notebook-info" class="info-text">Checking...</div>
+    </div>
+    <div id="sync-progress" class="progress hidden">
+      <div class="progress-bar"><div class="progress-fill"></div></div>
+      <span class="progress-text">Syncing...</span>
+    </div>
+    <div class="btn-group">
+      <button id="btn-sync" class="btn primary" disabled>
+        Sync to NotebookLM
+      </button>
+      <button id="btn-reset-sync" class="btn secondary" style="flex: 0.4; font-size: 11px;" disabled>
+        Reset
+      </button>
+    </div>
+    <div id="sync-result" class="result hidden"></div>
+  </section>
+
+  <!-- Tab: Backward Sync (Import) -->
+  <section id="tab-import" class="tab-content">
+    <p class="tab-description">Extract saved notes from NotebookLM and import them into a Zotero collection.</p>
+    <div class="field">
+      <label for="import-collection-select">Target Zotero Collection</label>
+      <select id="import-collection-select">
+        <option value="">Loading...</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="custom-tags">Custom Tags (comma-separated)</label>
+      <input type="text" id="custom-tags" placeholder="e.g. review, project-x" />
+    </div>
+    <div id="found-notes" class="notes-list hidden">
+      <div class="notes-header">
+        <label>Found Notes:</label>
+        <label class="select-all-label">
+          <input type="checkbox" id="select-all" checked />
+          Select all
+        </label>
+      </div>
+      <div id="notes-container"></div>
+    </div>
+    <div class="btn-group">
+      <button id="btn-extract" class="btn secondary">
+        Find Text Notes
+      </button>
+      <button id="btn-import" class="btn primary" disabled>
+        Import Selected
+      </button>
+    </div>
+    <div id="import-result" class="result hidden"></div>
+  </section>
+
+  <!-- Tab: Mappings -->
+  <section id="tab-mappings" class="tab-content">
+    <p class="tab-description">View and manage links between Zotero collections and NotebookLM notebooks.</p>
+    <div id="mappings-list" class="mappings-list">
+      <p class="empty-state">No mappings yet.</p>
+    </div>
+  </section>
+
+  <!-- Tab: Updates -->
+  <section id="tab-updates" class="tab-content">
+    <p class="tab-description">Latest releases and upcoming features.</p>
+
+    <div class="update-section">
+      <h3 class="update-version">v0.1.0 <span class="update-tag current">Current</span></h3>
+      <ul class="update-list">
+        <li>Forward sync: upload PDFs and URLs from Zotero to NotebookLM</li>
+        <li>Backward sync: extract text notes from NotebookLM Studio</li>
+        <li>Smart URL selection (prefers open-access over bot-protected links)</li>
+        <li>Auto-naming of new notebooks after Zotero collections</li>
+        <li>Parent document items for Notion/Notero compatibility</li>
+        <li>Custom tags and default tags on imported notes</li>
+        <li>Collapsed/vertical layout support</li>
+        <li>Duplicate detection and overwrite on re-import</li>
+      </ul>
+    </div>
+
+    <div class="update-section">
+      <h3 class="update-version">Planned <span class="update-tag planned">Upcoming</span></h3>
+      <ul class="update-list">
+        <li>Import audio overview transcripts</li>
+        <li>Import mind maps and other Studio formats</li>
+        <li>Selective source sync (choose which items to push)</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Support -->
+  <footer class="support-footer">
+    <a href="https://buymeacoffee.com/rafaeloliveira" target="_blank" class="bmc-link">
+      <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="28" />
+    </a>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>

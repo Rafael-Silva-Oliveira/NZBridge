@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "NZBridge — NotebookLM Zotero Bridge",
+  "version": "0.1.0",
+  "description": "Bidirectional sync between Zotero collections and Google NotebookLM notebooks",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "debugger",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:23119/*",
+    "https://notebooklm.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://notebooklm.google.com/*"],
+      "js": ["content.js", "noteExtractor.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

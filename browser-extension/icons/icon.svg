@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e40af"/>
+      <stop offset="100%" style="stop-color:#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <!-- Background -->
+  <rect width="128" height="128" rx="20" fill="url(#bg)"/>
+  <!-- Letter N -->
+  <text x="28" y="72" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="46" fill="white">N</text>
+  <!-- Letter Z -->
+  <text x="74" y="72" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="46" fill="white">Z</text>
+  <!-- Top arrow: N → Z -->
+  <line x1="38" y1="30" x2="82" y2="30" stroke="#fbbf24" stroke-width="3.5" stroke-linecap="round"/>
+  <polyline points="76,24 84,30 76,36" fill="none" stroke="#fbbf24" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Bottom arrow: Z → N -->
+  <line x1="90" y1="98" x2="46" y2="98" stroke="#34d399" stroke-width="3.5" stroke-linecap="round"/>
+  <polyline points="52,92 44,98 52,104" fill="none" stroke="#34d399" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
