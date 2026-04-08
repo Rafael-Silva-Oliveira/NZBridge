@@ -105,6 +105,8 @@ The plugin starts a local HTTP server automatically whenever Zotero is running. 
 
 ## Usage
 
+**Note**: If you are using an external storage other than Zoteros default, I recommend using [ZotMoov](https://github.com/wileyyugioh/zotmoov) to sync your collections across devices. It is also highly recommended to have the PDFs as attachments, as websites may have bot detection and will not render the PDFs.
+
 ### Forward Sync — Push sources from Zotero to NotebookLM
 
 Upload PDFs and URLs from a Zotero collection as sources in a NotebookLM notebook.
