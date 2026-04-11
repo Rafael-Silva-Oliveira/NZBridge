@@ -3,7 +3,7 @@
   "name": "__addonName__",
   "version": "__buildVersion__",
   "description": "__description__",
-  "homepage_url": "__homepage__",
+  "homepage_url": "https://github.com/Rafael-Silva-Oliveira/NZBridge",
   "author": "rafael-oliveira",
   "icons": {
     "48": "content/icons/favicon@0.5x.png",

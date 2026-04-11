@@ -1,7 +1,7 @@
 {
   "name": "nzbridge",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "NZBridge — Bidirectional sync between Zotero and Google NotebookLM",
   "config": {
     "addonName": "NZBridge",
@@ -12,13 +12,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rafae/n2z.git"
+    "url": "git+https://github.com/Rafael-Silva-Oliveira/NZBridge.git"
   },
-  "author": "rafae",
+  "author": "rafael-oliveira",
   "bugs": {
-    "url": "https://github.com/rafae/n2z/issues"
+    "url": "https://github.com/Rafael-Silva-Oliveira/NZBridge/issues"
   },
-  "homepage": "https://github.com/rafae/n2z#readme",
+  "homepage": "https://github.com/Rafael-Silva-Oliveira/NZBridge#readme",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "start": "zotero-plugin serve",
