@@ -4,7 +4,7 @@
   "version": "__buildVersion__",
   "description": "__description__",
   "homepage_url": "__homepage__",
-  "author": "__author__",
+  "author": "rafael-oliveira",
   "icons": {
     "48": "content/icons/favicon@0.5x.png",
     "96": "content/icons/favicon.png"
