@@ -103,7 +103,21 @@
     <p class="tab-description">Latest releases and upcoming features.</p>
 
     <div class="update-section">
-      <h3 class="update-version">v0.1.0 <span class="update-tag current">Current</span></h3>
+      <h3 class="update-version">v0.1.2 <span class="update-tag current">Current</span></h3>
+      <ul class="update-list">
+        <li>Fix: correct NotebookLM tab targeting when multiple notebook tabs are open</li>
+        <li>Fix: "Add sources" failures caused by syncing into the wrong tab</li>
+        <li>Fix: file-chooser interception now always cleaned up on error (restores manual uploads)</li>
+        <li>Fix: PDF uploads on macOS and Linux (path separator handling)</li>
+        <li>Fix: clearer errors when Zotero is not running or the plugin is unavailable</li>
+        <li>Fix: popup no longer hangs forever if the background worker is slow</li>
+        <li>Guard: prevents two syncs from running simultaneously on the same tab</li>
+        <li>Backward sync prefers the originally mapped notebook when multiple are open</li>
+      </ul>
+    </div>
+
+    <div class="update-section">
+      <h3 class="update-version">v0.1.0</h3>
       <ul class="update-list">
         <li>Forward sync: upload PDFs and URLs from Zotero to NotebookLM</li>
         <li>Backward sync: extract text notes from NotebookLM Studio</li>
