@@ -46,6 +46,7 @@ Before installing NZBridge, make sure you have:
 - **Google Chrome or Microsoft Edge** (version 116+) — Manifest V3 support is required
 - **A Google account** with access to [NotebookLM](https://notebooklm.google.com/)
 
+Note that it only works if your NotebookLM language settings is set to **english**.
 ## Installation
 
 NZBridge has **two components** that work together — you need to install both:
