@@ -8,6 +8,15 @@
 
 const ZOTERO_BASE = "http://localhost:23119";
 
+// Prevents overlapping syncs on the same NotebookLM tab from colliding on
+// chrome.debugger.attach, interleaving CDP commands, or writing duplicate
+// syncedItemHashes. Keyed by tabId.
+const activeSyncs = new Set();
+
+const NOTEBOOKLM_URL_PREFIX = "https://notebooklm.google.com/";
+const AMBIGUOUS_TAB_ERROR =
+  "Multiple NotebookLM tabs are open. Please switch to the notebook you want to sync into and try again.";
+
 // ─── Zotero API helpers ──────────────────────────────────────────────
 
 async function zoteroRequest(path, body = null) {
@@ -21,8 +30,24 @@ async function zoteroRequest(path, body = null) {
   if (body) {
     options.body = JSON.stringify(body);
   }
-  const res = await fetch(`${ZOTERO_BASE}${path}`, options);
-  return res.json();
+  let res;
+  try {
+    res = await fetch(`${ZOTERO_BASE}${path}`, options);
+  } catch {
+    throw new Error(
+      "Zotero is not running or the n2z plugin is not loaded. Make sure Zotero is open."
+    );
+  }
+  if (!res.ok) {
+    throw new Error(`Zotero returned HTTP ${res.status}`);
+  }
+  try {
+    return await res.json();
+  } catch {
+    throw new Error(
+      "Zotero returned a non-JSON response (plugin may have crashed)."
+    );
+  }
 }
 
 async function checkZoteroConnection() {
@@ -64,11 +89,49 @@ async function importNotesToZotero(notes) {
 
 // ─── NotebookLM tab helpers ──────────────────────────────────────────
 
-async function findNotebookLMTab() {
-  const tabs = await chrome.tabs.query({
+/**
+ * Resolves which NotebookLM tab a sync operation should target.
+ *
+ * Strategy order:
+ *   1. "active"     — active tab of the last-focused window is NotebookLM
+ *   2. "preferred"  — a NotebookLM tab whose URL matches preferredNotebookId
+ *   3. "sole"       — exactly one NotebookLM tab is open anywhere
+ *   4. "none"       — no NotebookLM tab open
+ *   5. "ambiguous"  — multiple NotebookLM tabs open and none match
+ */
+async function resolveNotebookLMTab(preferredNotebookId = null) {
+  const activeTabs = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  const active = activeTabs[0];
+  if (active?.url?.startsWith(NOTEBOOKLM_URL_PREFIX)) {
+    return { tab: active, reason: "active" };
+  }
+
+  const allNotebookLMTabs = await chrome.tabs.query({
     url: "https://notebooklm.google.com/*",
   });
-  return tabs.length > 0 ? tabs[0] : null;
+
+  if (preferredNotebookId) {
+    const match = allNotebookLMTabs.find((t) =>
+      t.url?.includes(`/notebook/${preferredNotebookId}`)
+    );
+    if (match) return { tab: match, reason: "preferred" };
+  }
+
+  if (allNotebookLMTabs.length === 1) {
+    return { tab: allNotebookLMTabs[0], reason: "sole" };
+  }
+  if (allNotebookLMTabs.length === 0) {
+    return { tab: null, reason: "none" };
+  }
+  return { tab: null, reason: "ambiguous" };
+}
+
+async function findNotebookLMTab() {
+  const { tab } = await resolveNotebookLMTab();
+  return tab;
 }
 
 function extractNotebookIdFromUrl(url) {
@@ -84,12 +147,15 @@ function extractNotebookIdFromUrl(url) {
  * happens per-item via addUrlSource or file injection.
  */
 async function forwardSync(collectionId, collectionName) {
-  // 1. Find NotebookLM tab
-  const tab = await findNotebookLMTab();
+  // 1. Resolve which NotebookLM tab to target
+  const { tab, reason } = await resolveNotebookLMTab();
   if (!tab) {
     return {
       success: false,
-      error: "No NotebookLM tab found. Please open NotebookLM first.",
+      error:
+        reason === "ambiguous"
+          ? AMBIGUOUS_TAB_ERROR
+          : "No NotebookLM tab found. Please open NotebookLM first.",
     };
   }
 
@@ -101,6 +167,22 @@ async function forwardSync(collectionId, collectionName) {
     };
   }
 
+  // Concurrency lock — prevent overlapping syncs on the same tab
+  if (activeSyncs.has(tab.id)) {
+    return {
+      success: false,
+      error: "A sync is already running on this NotebookLM tab.",
+    };
+  }
+  activeSyncs.add(tab.id);
+  try {
+    return await forwardSyncImpl(tab, notebookId, collectionId, collectionName);
+  } finally {
+    activeSyncs.delete(tab.id);
+  }
+}
+
+async function forwardSyncImpl(tab, notebookId, collectionId, collectionName) {
   // 1b. Set notebook title to the collection name (user can change it later)
   if (collectionName) {
     await chrome.scripting.executeScript({
@@ -239,7 +321,7 @@ async function forwardSync(collectionId, collectionName) {
     try {
       const urls = urlItems.map((i) => i.url);
       const result = await addUrlSourcesBatch(tab.id, urls);
-      const confirmed = result.success && result.method !== "enter-key";
+      const confirmed = result.success;
 
       // Build detailed error from step info
       let errorDetail = result.error || "";
@@ -658,24 +740,31 @@ async function injectFileViaCDP(tabId, file) {
 
   await sleep(2000);
 
+  // Track cleanup state so the finally block only acts on what was set up.
+  let interceptionEnabled = false;
+  let listenerAttached = false;
+  let onEvent = null;
+
   try {
     // Step 2: Set up file chooser interception, then click "Upload files"
     // The key insight: we must enable interception BEFORE clicking the button
     await chrome.debugger.sendCommand({ tabId }, "Page.enable", {});
     await chrome.debugger.sendCommand({ tabId }, "Page.setInterceptFileChooserDialog", { enabled: true });
+    interceptionEnabled = true;
 
     // Set up event listener for file chooser
     let fileChooserResolve;
     const fileChooserPromise = new Promise(r => { fileChooserResolve = r; });
     const timeout = setTimeout(() => fileChooserResolve(null), 10000);
 
-    const onEvent = (source, method, params) => {
+    onEvent = (source, method, params) => {
       if (source.tabId === tabId && method === "Page.fileChooserOpened") {
         clearTimeout(timeout);
         fileChooserResolve(params);
       }
     };
     chrome.debugger.onEvent.addListener(onEvent);
+    listenerAttached = true;
 
     // Click "Upload files" button
     await chrome.scripting.executeScript({
@@ -698,12 +787,11 @@ async function injectFileViaCDP(tabId, file) {
 
     // Wait for file chooser event
     const chooserEvent = await fileChooserPromise;
-    chrome.debugger.onEvent.removeListener(onEvent);
 
     let result;
     if (chooserEvent) {
       // File chooser intercepted! Set files via backendNodeId
-      const filePath = file.filePath.replace(/\//g, "\\");
+      const filePath = file.filePath;
       try {
         await chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", {
           files: [filePath],
@@ -717,7 +805,7 @@ async function injectFileViaCDP(tabId, file) {
       // No file chooser event — try fallback approaches
 
       // Fallback A: Find any input[type=file] that was created in the DOM
-      const filePath = file.filePath.replace(/\//g, "\\");
+      const filePath = file.filePath;
       try {
         const doc = await chrome.debugger.sendCommand({ tabId }, "DOM.getDocument", { depth: -1 });
         const nodes = await chrome.debugger.sendCommand({ tabId }, "DOM.querySelectorAll", {
@@ -878,11 +966,6 @@ async function injectFileViaCDP(tabId, file) {
       }
     }
 
-    // Cleanup interception
-    try {
-      await chrome.debugger.sendCommand({ tabId }, "Page.setInterceptFileChooserDialog", { enabled: false });
-    } catch {}
-
     if (result?.success) {
       await sleep(5000);
       // Close dialog
@@ -895,6 +978,24 @@ async function injectFileViaCDP(tabId, file) {
     return result || { success: false, error: "All file upload strategies failed" };
   } catch (e) {
     return { success: false, error: `CDP file inject: ${e.message}` };
+  } finally {
+    // Always remove the listener and disable interception, regardless of how
+    // we exit. Without this, a mid-flight exception leaves the tab's file
+    // chooser intercepted — breaking manual uploads until the tab is reloaded.
+    if (listenerAttached && onEvent) {
+      try {
+        chrome.debugger.onEvent.removeListener(onEvent);
+      } catch {}
+    }
+    if (interceptionEnabled) {
+      try {
+        await chrome.debugger.sendCommand(
+          { tabId },
+          "Page.setInterceptFileChooserDialog",
+          { enabled: false }
+        );
+      } catch {}
+    }
   }
 }
 
@@ -1501,14 +1602,45 @@ async function extractNotesFromTab(tabId) {
  * Backward sync: extracts notes from NotebookLM and imports to Zotero.
  */
 async function backwardSync(collectionId, customTags) {
-  const tab = await findNotebookLMTab();
+  // Prefer the notebook that this collection was originally mapped to, so that
+  // if the user has multiple NotebookLM tabs open we pull notes from the right one.
+  let preferredNotebookId = null;
+  try {
+    const mappingsRes = await getMappings();
+    const mapping = (mappingsRes?.data || []).find(
+      (m) => m.collectionId === collectionId
+    );
+    if (mapping?.notebookId) preferredNotebookId = mapping.notebookId;
+  } catch {
+    // Non-fatal — fall through to active-tab resolution.
+  }
+
+  const { tab, reason } = await resolveNotebookLMTab(preferredNotebookId);
   if (!tab) {
     return {
       success: false,
-      error: "No NotebookLM tab found. Please open NotebookLM first.",
+      error:
+        reason === "ambiguous"
+          ? AMBIGUOUS_TAB_ERROR
+          : "No NotebookLM tab found. Please open NotebookLM first.",
     };
   }
 
+  if (activeSyncs.has(tab.id)) {
+    return {
+      success: false,
+      error: "A sync is already running on this NotebookLM tab.",
+    };
+  }
+  activeSyncs.add(tab.id);
+  try {
+    return await backwardSyncImpl(tab, collectionId, customTags);
+  } finally {
+    activeSyncs.delete(tab.id);
+  }
+}
+
+async function backwardSyncImpl(tab, collectionId, customTags) {
   const notebookId = extractNotebookIdFromUrl(tab.url);
 
   let notes;
@@ -1585,7 +1717,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return backwardSync(message.collectionId, message.customTags);
 
       case "n2z-get-notebooklm-tab": {
-        const tab = await findNotebookLMTab();
+        const { tab, reason } = await resolveNotebookLMTab();
         if (tab) {
           return {
             success: true,
@@ -1596,7 +1728,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             },
           };
         }
-        return { success: false, error: "No NotebookLM tab found" };
+        return {
+          success: false,
+          error:
+            reason === "ambiguous"
+              ? AMBIGUOUS_TAB_ERROR
+              : "No NotebookLM tab found",
+        };
       }
 
       case "n2z-get-items":
@@ -1615,9 +1753,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       case "n2z-extract-notes": {
-        const nlmTab = await findNotebookLMTab();
+        const { tab: nlmTab, reason: extractReason } =
+          await resolveNotebookLMTab();
         if (!nlmTab) {
-          return { success: false, error: "No NotebookLM tab found" };
+          return {
+            success: false,
+            error:
+              extractReason === "ambiguous"
+                ? AMBIGUOUS_TAB_ERROR
+                : "No NotebookLM tab found",
+          };
         }
         try {
           const notes = await extractNotesFromTab(nlmTab.id);
@@ -1629,7 +1774,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case "n2z-import-selected-notes": {
         // Import pre-extracted notes (selected by user in popup) into Zotero
-        const nlmTab2 = await findNotebookLMTab();
+        const { tab: nlmTab2 } = await resolveNotebookLMTab();
         const notebookId2 = nlmTab2 ? extractNotebookIdFromUrl(nlmTab2.url) : "";
         const notes = message.notes || [];
         if (notes.length === 0) {

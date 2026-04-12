@@ -98,7 +98,7 @@ async function loadNotebookInfo() {
     info.textContent = `Connected: ${result.data.notebookId || "Notebook detected"}`;
     info.style.color = "#166534";
   } else {
-    info.textContent = "No NotebookLM tab open";
+    info.textContent = result.error || "No NotebookLM tab open";
     info.style.color = "#991b1b";
   }
 }
@@ -403,9 +403,22 @@ async function handleImportNotes() {
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
-function sendMessage(message) {
+function sendMessage(message, timeoutMs = 180000) {
   return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({
+        success: false,
+        error:
+          "Operation timed out. The background worker may have been suspended — try again.",
+      });
+    }, timeoutMs);
     chrome.runtime.sendMessage(message, (response) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       resolve(response || { success: false, error: "No response" });
     });
   });
