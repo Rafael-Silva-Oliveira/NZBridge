@@ -91,10 +91,9 @@ The plugin starts a local HTTP server automatically whenever Zotero is running. 
 ### Step 2 — Install the Browser Extension
 
 #### Option A: From the store
-- **Edge**: Install from the [Edge Add-ons Store] - Coming soon!
-- **Chrome**: Coming soon on the Chrome Web Store
+- **Edge**: Install from the [Edge Add-ons Store](https://microsoftedge.microsoft.com/addons/detail/nzbridge-%E2%80%94-notebooklm-zot/hkmphghembjnkakgpffjkgfgkgccench)
 
-#### Option B: Load unpacked 
+#### Option B: Load unpacked (useful when new updates are released on github, but yet to be published in Edge Add-ons Store - This can take 7 days to be updated on the store)
 1. Download or clone this repository
 2. Open your browser and navigate to the extensions page:
    - **Edge**: `edge://extensions/`
