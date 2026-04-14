@@ -13,6 +13,8 @@ NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/
 
 > See NZBridge in action — full walkthrough of forward sync, backward sync, and the Zotero plugin installation.
 
+Note: Make sure your NotebookLM page is in English. 
+
 ## Features
 
 ### Forward Sync (Zotero -> NotebookLM)
