@@ -287,13 +287,8 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName) {
     };
   }
 
-  // Warn about NotebookLM's 50-source limit
-  if (items.length > 50) {
-    return {
-      success: false,
-      error: `This collection has ${items.length} items, but NotebookLM only supports 50 sources per notebook. Please select a smaller sub-collection.`,
-    };
-  }
+  // Note: NotebookLM Pro users can exceed 50 sources. We no longer block here;
+  // free-tier users will see failures from NotebookLM itself for sources beyond the limit.
 
   // 3. Check for already-synced items (keyed by collection+notebook pair)
   const syncKey = `sync_${collectionId}_${notebookId}`;

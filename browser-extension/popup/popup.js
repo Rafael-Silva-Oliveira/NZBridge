@@ -152,11 +152,11 @@ async function previewItems(collectionId) {
 
   if (totalCount > 50) {
     html +=
-      '<br/><span class="warn">NotebookLM supports max 50 sources per notebook. Please use a smaller sub-collection.</span>';
-    syncBtn.disabled = true;
-  } else {
-    syncBtn.disabled = false;
+      '<br/><span class="warn">&#9888;&#xFE0F; You have ' +
+      totalCount +
+      " items. NotebookLM's free tier supports max 50 sources per notebook. Pro plan users can upload more \u2014 sync will proceed but may fail if you are on the free tier.</span>";
   }
+  syncBtn.disabled = false;
   resetBtn.disabled = false;
 
   summary.innerHTML = html;
