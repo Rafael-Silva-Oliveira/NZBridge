@@ -1369,21 +1369,48 @@ async function extractNotesFromTab(tabId) {
 
         if (bannerEl) {
           debug.bannerFound = true;
-          let contentParent = bannerEl.parentElement;
-          for (let i = 0; i < 5; i++) {
-            if (!contentParent?.parentElement) break;
-            if (contentParent.children.length >= 2) break;
-            contentParent = contentParent.parentElement;
+
+          // Walk up from the banner to find the tightest ancestor that has a
+          // sibling child with substantial text content (the actual note body).
+          // We walk all the way to STUDIO-PANEL / app-body level (up to 10 steps)
+          // and pick the best candidate rather than stopping at the first >= 2 children.
+          let contentParent = null;
+          let candidate = bannerEl.parentElement;
+          for (let i = 0; i < 10; i++) {
+            if (!candidate?.parentElement) break;
+            const children = Array.from(candidate.children);
+            // Check if any sibling of the banner-containing child has real text
+            const bannerChild = children.find(c => c === bannerEl || c.contains(bannerEl));
+            if (bannerChild) {
+              const siblings = children.filter(c => c !== bannerChild);
+              const hasContent = siblings.some(c => {
+                const t = getCleanText(c).trim();
+                return t.length > 50 && !isChrome(t);
+              });
+              if (hasContent) {
+                contentParent = candidate;
+                break;
+              }
+            }
+            candidate = candidate.parentElement;
+          }
+          // Fallback to old behaviour if nothing better found
+          if (!contentParent) {
+            contentParent = bannerEl.parentElement;
+            for (let i = 0; i < 5; i++) {
+              if (!contentParent?.parentElement) break;
+              if (contentParent.children.length >= 2) break;
+              contentParent = contentParent.parentElement;
+            }
           }
 
-          // Collect content after banner
+          // Collect all sibling children that are NOT the banner container
+          const directChildren = Array.from(contentParent.children);
+          const bannerChild = directChildren.find(c => c === bannerEl || c.contains(bannerEl));
           let contentParts = [];
           let htmlParts = [];
-          const directChildren = Array.from(contentParent.children);
-          let afterBanner = false;
           for (const child of directChildren) {
-            if (child === bannerEl || child.contains(bannerEl)) { afterBanner = true; continue; }
-            if (!afterBanner) continue;
+            if (child === bannerChild) continue;
             const text = getCleanText(child).trim();
             if (isChrome(text)) continue;
             if (text.length < 5) continue;
@@ -1394,13 +1421,10 @@ async function extractNotesFromTab(tabId) {
             return { content: contentParts.join("\n\n"), html: htmlParts.join(""), method: "after-banner-siblings", debug };
           }
 
-          // Deeper search
+          // Deeper search — largest block anywhere in contentParent excluding banner
           const blocksAfter = [];
-          let pastBanner = false;
           contentParent.querySelectorAll("div, p, section, article").forEach(el => {
-            if (el === bannerEl || el.contains(bannerEl)) { pastBanner = true; return; }
-            if (bannerEl.contains(el)) return;
-            if (!pastBanner) return;
+            if (bannerEl === el || bannerEl.contains(el) || el.contains(bannerEl)) return;
             const text = getCleanText(el).trim();
             if (text.length < 30 || isChrome(text)) return;
             blocksAfter.push({ text, html: getCleanHtml(el), len: text.length });
