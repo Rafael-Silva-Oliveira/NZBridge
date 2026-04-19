@@ -17,7 +17,7 @@ async function onStartup() {
   Zotero.PreferencePanes.register({
     pluginID: addon.data.config.addonID,
     src: rootURI + "content/preferences.xhtml",
-    label: "n2z",
+    label: addon.data.config.addonName,
     image: `chrome://${addon.data.config.addonRef}/content/icons/favicon.png`,
   });
 
