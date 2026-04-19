@@ -13,6 +13,11 @@ const ZOTERO_BASE = "http://localhost:23119";
 // syncedItemHashes. Keyed by tabId.
 const activeSyncs = new Set();
 
+// Stores the last known progress/result for each tabId so the popup can
+// poll for updates without a long-lived message channel.
+// Shape: { phase, current, total, currentTitle, done, result }
+const syncProgress = new Map();
+
 const NOTEBOOKLM_URL_PREFIX = "https://notebooklm.google.com/";
 const AMBIGUOUS_TAB_ERROR =
   "Multiple NotebookLM tabs are open. Please switch to the notebook you want to sync into and try again.";
@@ -146,7 +151,7 @@ function extractNotebookIdFromUrl(url) {
  * so the popup can display what will be synced. Actual injection
  * happens per-item via addUrlSource or file injection.
  */
-async function forwardSync(collectionId, collectionName) {
+async function forwardSync(collectionId, collectionName, selectedItemKeys) {
   // 1. Resolve which NotebookLM tab to target
   const { tab, reason } = await resolveNotebookLMTab();
   if (!tab) {
@@ -175,14 +180,30 @@ async function forwardSync(collectionId, collectionName) {
     };
   }
   activeSyncs.add(tab.id);
-  try {
-    return await forwardSyncImpl(tab, notebookId, collectionId, collectionName);
-  } finally {
-    activeSyncs.delete(tab.id);
-  }
+
+  // Reset progress state for this tab
+  syncProgress.set(tab.id, { phase: "starting", current: 0, total: 0, currentTitle: "", done: false, result: null });
+
+  // Run the sync in the background — do NOT await it here.
+  // The popup polls for progress via n2z-sync-status.
+  forwardSyncImpl(tab, notebookId, collectionId, collectionName, selectedItemKeys)
+    .then((result) => {
+      syncProgress.set(tab.id, { ...syncProgress.get(tab.id), done: true, result });
+      broadcastProgress({ tabId: tab.id, done: true, result });
+    })
+    .catch((e) => {
+      const result = { success: false, error: e.message };
+      syncProgress.set(tab.id, { ...syncProgress.get(tab.id), done: true, result });
+      broadcastProgress({ tabId: tab.id, done: true, result });
+    })
+    .finally(() => {
+      activeSyncs.delete(tab.id);
+    });
+
+  return { success: true, started: true, tabId: tab.id };
 }
 
-async function forwardSyncImpl(tab, notebookId, collectionId, collectionName) {
+async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, selectedItemKeys) {
   // 1b. Set notebook title to the collection name (user can change it later)
   if (collectionName) {
     await chrome.scripting.executeScript({
@@ -294,7 +315,10 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName) {
   const syncKey = `sync_${collectionId}_${notebookId}`;
   const syncState = await chrome.storage.local.get(syncKey);
   const syncedHashes = syncState[syncKey] || {};
-  const newItems = items.filter((item) => !syncedHashes[item.itemKey]);
+  const selectedSet = selectedItemKeys ? new Set(selectedItemKeys) : null;
+  const newItems = items.filter(
+    (item) => !syncedHashes[item.itemKey] && (!selectedSet || selectedSet.has(item.itemKey))
+  );
 
   if (newItems.length === 0) {
     return {
@@ -309,10 +333,19 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName) {
   const urlItems = newItems.filter((i) => i.exportType === "url");
   const fileItems = newItems.filter((i) => i.exportType === "file");
   const allResults = [];
+  const totalItems = newItems.length;
+  let doneCount = 0;
+
+  const emitProgress = (phase, currentTitle) => {
+    const state = { phase, current: doneCount, total: totalItems, currentTitle: currentTitle || "", done: false, result: null };
+    syncProgress.set(tab.id, state);
+    broadcastProgress({ tabId: tab.id, ...state });
+  };
 
   // 5a. Add ALL URL sources at once (NotebookLM supports multiple URLs
   // separated by newlines in a single paste)
   if (urlItems.length > 0) {
+    emitProgress("urls", `Adding ${urlItems.length} URL${urlItems.length > 1 ? "s" : ""}…`);
     try {
       const urls = urlItems.map((i) => i.url);
       const result = await addUrlSourcesBatch(tab.id, urls);
@@ -337,6 +370,7 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName) {
         if (confirmed) {
           syncedHashes[item.itemKey] = Date.now().toString();
         }
+        doneCount++;
       }
     } catch (e) {
       for (const item of urlItems) {
@@ -346,15 +380,21 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName) {
           error: e.message,
           type: "url",
         });
+        doneCount++;
       }
     }
   }
 
-  // 5b. Add file sources via CDP
-  // Wait for any URL dialog to fully close before starting file uploads
+  // 5b. Add file sources via CDP — batch all files in groups of BATCH_SIZE.
+  // NotebookLM's file input accepts multiple files at once; we upload them
+  // in batches so the user sees incremental progress and we don't overwhelm
+  // the upload queue.
+  const FILE_BATCH_SIZE = 1;
+
   if (fileItems.length > 0 && urlItems.length > 0) {
     await sleep(2000);
   }
+
   if (fileItems.length > 0) {
     let debuggerAttached = false;
     try {
@@ -362,44 +402,51 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName) {
       debuggerAttached = true;
     } catch (e) {
       for (const item of fileItems) {
-        allResults.push({
-          title: item.title,
-          success: false,
-          error: `Debugger failed: ${e.message}`,
-          type: "file",
-        });
+        allResults.push({ title: item.title, success: false, error: `Debugger failed: ${e.message}`, type: "file" });
+        doneCount++;
       }
     }
 
     if (debuggerAttached) {
       try {
+        // Fetch file data (base64) from Zotero for each file
+        const resolvedFiles = [];
         for (const item of fileItems) {
           const fileRes = await getFile(item.attachmentId);
           if (!fileRes.success || !fileRes.data) {
-            allResults.push({
-              title: item.title,
-              success: false,
-              error: "Could not fetch file from Zotero",
-              type: "file",
-            });
-            continue;
+            allResults.push({ title: item.title, success: false, error: "Could not fetch file from Zotero", type: "file" });
+            doneCount++;
+          } else {
+            resolvedFiles.push({ item, fileData: fileRes.data });
           }
-          const result = await injectFileViaCDP(tab.id, fileRes.data);
-          allResults.push({
-            title: item.title,
-            success: result.success,
-            error: result.error,
-            type: "file",
-          });
-          if (result.success) {
-            syncedHashes[item.itemKey] = Date.now().toString();
+        }
+
+        // Upload in batches via base64 drop
+        for (let bi = 0; bi < resolvedFiles.length; bi += FILE_BATCH_SIZE) {
+          const batch = resolvedFiles.slice(bi, bi + FILE_BATCH_SIZE);
+          const batchFileData = batch.map(f => ({
+            base64: f.fileData.base64,
+            filename: f.fileData.filename,
+            contentType: f.fileData.contentType || "application/pdf",
+          }));
+
+          emitProgress("files", batch[0].item.title + (batch.length > 1 ? ` (+${batch.length - 1} more)` : ""));
+
+          const result = await injectFilesBatchViaCDP(tab.id, batchFileData);
+
+          for (const { item } of batch) {
+            allResults.push({ title: item.title, success: result.success, error: result.error, type: "file" });
+            if (result.success) syncedHashes[item.itemKey] = Date.now().toString();
+            doneCount++;
           }
-          await sleep(3000);
+
+          // Small gap between batches
+          if (bi + FILE_BATCH_SIZE < resolvedFiles.length) {
+            await sleep(800);
+          }
         }
       } finally {
-        try {
-          await chrome.debugger.detach({ tabId: tab.id });
-        } catch {}
+        try { await chrome.debugger.detach({ tabId: tab.id }); } catch {}
       }
     }
   }
@@ -688,308 +735,196 @@ async function addUrlSourcesBatch(tabId, urls) {
 }
 
 /**
- * Injects a file into NotebookLM via Chrome DevTools Protocol.
- * Strategy:
- * 1. Open the "Add sources" dialog
- * 2. Enable Page.setInterceptFileChooserDialog
- * 3. Click "Upload files" (CDP intercepts the OS dialog)
- * 4. Use DOM.setFileInputFiles with the actual file path
+ * Uploads a batch of files into NotebookLM by constructing real File objects
+ * from base64 data inside the page and dispatching a drop event on the drop zone.
+ *
+ * This approach works on both Chrome and Edge and avoids all CDP file path issues:
+ * - DOM.setFileInputFiles requires native OS paths which fail silently on Windows
+ * - Page.fileChooserOpened never fires because "Upload files" is a nav button, not a picker
+ * - Drop events with a real DataTransfer populated from base64 bytes work reliably
+ *
+ * Each file is uploaded one at a time (one open/drop/close cycle per file) so
+ * NotebookLM can process each upload sequentially without queue overflow.
  */
-async function injectFileViaCDP(tabId, file) {
-  if (!file.filePath) {
-    return { success: false, error: "No file path available from Zotero" };
+async function injectFilesBatchViaCDP(tabId, filesData) {
+  if (!filesData?.length) {
+    return { success: false, error: "No files provided" };
   }
 
-  // Strategy: Use CDP Input.dispatchDragEvent to dispatch trusted drag events.
-  // Trusted events bypass Angular's isTrusted check.
-  // 1. Create a hidden file input + set file via DOM.setFileInputFiles
-  // 2. Read file as blob from the input
-  // 3. Use Input.dispatchDragEvent (trusted) on the drop zone coordinates
-
-  // Step 1: Ensure "Add sources" dialog is open
-  const step1 = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
+  // Step 1: Ensure "Add sources" dialog is open. Poll up to 8s.
+  const dialogOpened = await waitForInTab(
+    tabId,
+    () => {
       const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
       const body = document.body.textContent || "";
       if (/drop your files/i.test(body) || /upload files/i.test(body)) {
-        return { success: true, method: "dialog-already-open" };
+        return { success: true, method: "already-open" };
       }
       const candidates = document.querySelectorAll('button, [role="button"], a, [tabindex="0"]');
       for (const el of candidates) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).toLowerCase();
-        if (clean.includes("add source")) {
+        const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+        if (clean.includes("add source") || aria.includes("add source")) {
           el.click();
-          return { success: true, clicked: clean };
+          return { success: true, method: "clicked" };
         }
       }
-      return { success: false, error: "No 'Add sources' button" };
+      return null;
+    },
+    { timeoutMs: 8000, intervalMs: 300 }
+  );
+
+  if (!dialogOpened?.success) {
+    return { success: false, error: "Could not open Add sources dialog" };
+  }
+
+  if (dialogOpened.method !== "already-open") {
+    const ready = await waitForInTab(
+      tabId,
+      () => /drop your files|upload files/i.test(document.body.textContent || ""),
+      { timeoutMs: 5000, intervalMs: 100 }
+    );
+    if (!ready) return { success: false, error: "Upload dialog did not appear" };
+  }
+
+  // Step 2: Find the "Upload files" button coordinates and use a trusted CDP
+  // mouse click to open the file sub-panel. A scripted .click() doesn't create
+  // a user activation, but CDP Input.dispatchMouseEvent does — this allows the
+  // file chooser to open, which we then intercept.
+  const uploadBtnCoords = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
+      const all = document.querySelectorAll('button, [role="button"], [tabindex="0"], a, label, div, span');
+      for (const el of all) {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        const clean = getCleanText(el).toLowerCase();
+        if (clean === "upload files") {
+          const rect = el.getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, text: clean };
+        }
+      }
+      // Loose fallback
+      for (const el of all) {
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        const clean = getCleanText(el).toLowerCase();
+        if (clean.includes("upload") && clean.length < 30) {
+          const rect = el.getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, text: clean };
+        }
+      }
+      return null;
     },
   });
 
-  if (!step1?.[0]?.result?.success) {
-    return step1?.[0]?.result || { success: false, error: "Could not open Add sources" };
+  const btnCoords = uploadBtnCoords?.[0]?.result;
+  if (!btnCoords) {
+    return { success: false, error: "Upload files button not found in dialog" };
   }
 
-  await sleep(2000);
-
-  // Track cleanup state so the finally block only acts on what was set up.
+  // Enable file chooser interception before the trusted click
   let interceptionEnabled = false;
   let listenerAttached = false;
   let onEvent = null;
 
   try {
-    // Step 2: Set up file chooser interception, then click "Upload files"
-    // The key insight: we must enable interception BEFORE clicking the button
     await chrome.debugger.sendCommand({ tabId }, "Page.enable", {});
     await chrome.debugger.sendCommand({ tabId }, "Page.setInterceptFileChooserDialog", { enabled: true });
     interceptionEnabled = true;
 
-    // Set up event listener for file chooser
     let fileChooserResolve;
     const fileChooserPromise = new Promise(r => { fileChooserResolve = r; });
-    const timeout = setTimeout(() => fileChooserResolve(null), 10000);
-
+    const chooserTimeout = setTimeout(() => fileChooserResolve(null), 8000);
     onEvent = (source, method, params) => {
       if (source.tabId === tabId && method === "Page.fileChooserOpened") {
-        clearTimeout(timeout);
+        clearTimeout(chooserTimeout);
         fileChooserResolve(params);
       }
     };
     chrome.debugger.onEvent.addListener(onEvent);
     listenerAttached = true;
 
-    // Click "Upload files" button
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
-        const all = document.querySelectorAll('button, [role="button"], [tabindex="0"], a, div, span, label');
-        for (const el of all) {
-          const style = window.getComputedStyle(el);
-          if (style.display === "none" || style.visibility === "hidden") continue;
-          const clean = getCleanText(el).toLowerCase();
-          if (clean === "upload files" && el.textContent.length < 60) {
-            el.click();
-            return { success: true, method: "upload-files-click" };
-          }
-        }
-        return { success: false, error: "Upload files button not found" };
-      },
+    // Step 3: Trusted CDP mouse click — creates a real user activation
+    const x = Math.round(btnCoords.x);
+    const y = Math.round(btnCoords.y);
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mousePressed", x, y, button: "left", clickCount: 1,
+    });
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseReleased", x, y, button: "left", clickCount: 1,
     });
 
-    // Wait for file chooser event
+    // Step 4: Wait for file chooser event
     const chooserEvent = await fileChooserPromise;
-
-    let result;
-    if (chooserEvent) {
-      // File chooser intercepted! Set files via backendNodeId
-      const filePath = file.filePath;
-      try {
-        await chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", {
-          files: [filePath],
-          backendNodeId: chooserEvent.backendNodeId,
-        });
-        result = { success: true, method: "fileChooserIntercepted" };
-      } catch (e) {
-        result = { success: false, error: `setFileInputFiles via chooser: ${e.message}` };
-      }
-    } else {
-      // No file chooser event — try fallback approaches
-
-      // Fallback A: Find any input[type=file] that was created in the DOM
-      const filePath = file.filePath;
-      try {
-        const doc = await chrome.debugger.sendCommand({ tabId }, "DOM.getDocument", { depth: -1 });
-        const nodes = await chrome.debugger.sendCommand({ tabId }, "DOM.querySelectorAll", {
-          nodeId: doc.root.nodeId,
-          selector: 'input[type="file"]',
-        });
-        if (nodes?.nodeIds?.length > 0) {
-          await chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", {
-            nodeId: nodes.nodeIds[nodes.nodeIds.length - 1],
-            files: [filePath],
-          });
-          result = { success: true, method: "existingFileInput" };
-        }
-      } catch (e) {
-        // continue to fallback B
-      }
-
-      // Fallback B: Create our own input, set file, trigger change on it,
-      // then also try to find and trigger change on any Angular file input
-      if (!result) {
-        try {
-          // Create hidden input
-          await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-            expression: `
-              (() => {
-                let inp = document.getElementById("_n2z_file_input");
-                if (inp) inp.remove();
-                inp = document.createElement("input");
-                inp.type = "file";
-                inp.id = "_n2z_file_input";
-                inp.accept = ".pdf,.txt,.md,.docx";
-                inp.style.position = "fixed";
-                inp.style.left = "-9999px";
-                document.body.appendChild(inp);
-                return true;
-              })()
-            `,
-            returnByValue: true,
-          });
-
-          const doc2 = await chrome.debugger.sendCommand({ tabId }, "DOM.getDocument", { depth: -1 });
-          const nodes2 = await chrome.debugger.sendCommand({ tabId }, "DOM.querySelectorAll", {
-            nodeId: doc2.root.nodeId,
-            selector: "#_n2z_file_input",
-          });
-
-          if (nodes2?.nodeIds?.length) {
-            await chrome.debugger.sendCommand({ tabId }, "DOM.setFileInputFiles", {
-              nodeId: nodes2.nodeIds[0],
-              files: [filePath],
-            });
-
-            // Use Input.dispatchDragEvent for trusted drag events
-            // First find the drop zone coordinates
-            const dropInfo = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-              expression: `
-                (() => {
-                  // Find the drop zone area
-                  const allEls = document.querySelectorAll("*");
-                  for (const el of allEls) {
-                    const t = (el.textContent || "").toLowerCase();
-                    if (t.length > 500) continue;
-                    if (/drop\\s+(your\\s+)?files/i.test(t) || /drag.*drop/i.test(t)) {
-                      let candidate = el;
-                      for (let i = 0; i < 5; i++) {
-                        if (!candidate.parentElement) break;
-                        candidate = candidate.parentElement;
-                        const rect = candidate.getBoundingClientRect();
-                        if (rect.width > 200 && rect.height > 100) {
-                          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, found: true, tag: candidate.tagName };
-                        }
-                      }
-                    }
-                  }
-                  // Fallback: use dialog center
-                  const dialogs = document.querySelectorAll('[role="dialog"], [class*="dialog"]');
-                  for (const d of dialogs) {
-                    const rect = d.getBoundingClientRect();
-                    if (rect.width > 100 && rect.height > 100) {
-                      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, found: true, tag: d.tagName };
-                    }
-                  }
-                  return { found: false };
-                })()
-              `,
-              returnByValue: true,
-            });
-
-            const dropCoords = dropInfo?.result?.value;
-
-            if (dropCoords?.found) {
-              const x = Math.round(dropCoords.x);
-              const y = Math.round(dropCoords.y);
-
-              // Read file data from our input to include in drag data
-              const fileData = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-                expression: `
-                  new Promise((resolve) => {
-                    const inp = document.getElementById("_n2z_file_input");
-                    if (!inp || !inp.files[0]) { resolve(null); return; }
-                    const f = inp.files[0];
-                    resolve({ name: f.name, size: f.size, type: f.type || "application/pdf" });
-                  })
-                `,
-                returnByValue: true,
-                awaitPromise: true,
-              });
-
-              const fInfo = fileData?.result?.value;
-              const mimeType = fInfo?.type || "application/pdf";
-
-              // Dispatch trusted drag events via CDP Input domain
-              await chrome.debugger.sendCommand({ tabId }, "Input.dispatchDragEvent", {
-                type: "dragEnter",
-                x, y,
-                data: {
-                  items: [{ mimeType, data: "" }],
-                  files: [file.filePath],
-                  dragOperationsMask: 1,
-                },
-              });
-
-              await chrome.debugger.sendCommand({ tabId }, "Input.dispatchDragEvent", {
-                type: "dragOver",
-                x, y,
-                data: {
-                  items: [{ mimeType, data: "" }],
-                  files: [file.filePath],
-                  dragOperationsMask: 1,
-                },
-              });
-
-              await chrome.debugger.sendCommand({ tabId }, "Input.dispatchDragEvent", {
-                type: "drop",
-                x, y,
-                data: {
-                  items: [{ mimeType, data: "" }],
-                  files: [file.filePath],
-                  dragOperationsMask: 1,
-                },
-              });
-
-              // Clean up
-              await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-                expression: `document.getElementById("_n2z_file_input")?.remove()`,
-              });
-
-              result = { success: true, method: "cdp-trusted-drag", dropTarget: dropCoords.tag };
-            } else {
-              result = { success: false, error: "No drop zone found for CDP drag" };
-            }
-          } else {
-            result = { success: false, error: "Could not create file input" };
-          }
-        } catch (e) {
-          result = { success: false, error: `Fallback drag: ${e.message}` };
-        }
-      }
+    if (!chooserEvent) {
+      return { success: false, error: `Trusted click on "${btnCoords.text}" did not open file chooser` };
     }
 
-    if (result?.success) {
-      await sleep(5000);
-      // Close dialog
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        func: () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })),
-      });
+    // Step 5: Set files using the first file only (one per open/close cycle)
+    // We only use filePath here — but since setFileInputFiles may fail on Windows
+    // paths, we write a temp file via a blob URL workaround instead.
+    // Actually: use backendNodeId from the chooser event — this is the real input.
+    // We still need to write file bytes somewhere CDP can read them.
+    // Solution: write base64 data into the page as a blob, get a local blob URL,
+    // then use Runtime to set the input's files via a FileList trick.
+    const f = filesData[0];
+    const setResult = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+      expression: `
+        (async () => {
+          try {
+            const base64 = ${JSON.stringify(f.base64)};
+            const filename = ${JSON.stringify(f.filename)};
+            const type = ${JSON.stringify(f.contentType || "application/pdf")};
+            const bin = atob(base64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            const file = new File([bytes], filename, { type });
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            // Find the file input that was just opened
+            const inp = document.querySelector('input[type="file"]');
+            if (!inp) return { ok: false, reason: 'no-input' };
+            Object.defineProperty(inp, 'files', { value: dt.files, configurable: true });
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            return { ok: true, files: dt.files.length };
+          } catch(e) { return { ok: false, reason: e.message }; }
+        })()
+      `,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+
+    const setInfo = setResult?.result?.value;
+    if (!setInfo?.ok) {
+      return { success: false, error: `Could not set files on input: ${setInfo?.reason}` };
     }
 
-    return result || { success: false, error: "All file upload strategies failed" };
+    // Step 6: Close dialog and wait
+    await sleep(1500);
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })),
+    });
+    await waitForInTab(
+      tabId,
+      () => !/drop your files|upload files/i.test(document.body.textContent || ""),
+      { timeoutMs: 10000, intervalMs: 200 }
+    );
+
+    return { success: true, method: "trusted-click+defineProperty", count: 1 };
   } catch (e) {
-    return { success: false, error: `CDP file inject: ${e.message}` };
+    return { success: false, error: `File inject: ${e.message}` };
   } finally {
-    // Always remove the listener and disable interception, regardless of how
-    // we exit. Without this, a mid-flight exception leaves the tab's file
-    // chooser intercepted — breaking manual uploads until the tab is reloaded.
     if (listenerAttached && onEvent) {
-      try {
-        chrome.debugger.onEvent.removeListener(onEvent);
-      } catch {}
+      try { chrome.debugger.onEvent.removeListener(onEvent); } catch {}
     }
     if (interceptionEnabled) {
-      try {
-        await chrome.debugger.sendCommand(
-          { tabId },
-          "Page.setInterceptFileChooserDialog",
-          { enabled: false }
-        );
-      } catch {}
+      try { await chrome.debugger.sendCommand({ tabId }, "Page.setInterceptFileChooserDialog", { enabled: false }); } catch {}
     }
   }
 }
@@ -1712,6 +1647,39 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Broadcasts a progress update to the popup (fire-and-forget).
+ * The popup may not be open, so we ignore errors.
+ */
+function broadcastProgress(payload) {
+  chrome.runtime.sendMessage({ type: "n2z-sync-progress", ...payload }).catch(() => {});
+}
+
+/**
+ * Polls a predicate function inside a tab until it returns truthy, or the
+ * timeout elapses. Returns the final result (the last value the predicate
+ * returned). Used to replace fixed sleeps that wait on DOM transitions.
+ */
+async function waitForInTab(tabId, predicateFn, { timeoutMs = 3000, intervalMs = 100, args = [] } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    try {
+      const r = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: predicateFn,
+        args,
+      });
+      last = r?.[0]?.result;
+      if (last) return last;
+    } catch {
+      // tab may be transitioning; retry
+    }
+    await sleep(intervalMs);
+  }
+  return last;
+}
+
 // ─── Message handlers ────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1730,7 +1698,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return removeMapping(message.collectionId);
 
       case "n2z-forward-sync":
-        return forwardSync(message.collectionId, message.collectionName);
+        return forwardSync(message.collectionId, message.collectionName, message.selectedItemKeys);
+
+      case "n2z-sync-status": {
+        const prog = syncProgress.get(message.tabId);
+        return prog ? { success: true, data: prog } : { success: false, error: "No sync in progress" };
+      }
 
       case "n2z-backward-sync":
         return backwardSync(message.collectionId, message.customTags);
@@ -1758,6 +1731,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case "n2z-get-items":
         return getExportableItems(message.collectionId);
+
+      case "n2z-inspect-upload-dialog": {
+        const { tab: inspectTab } = await resolveNotebookLMTab();
+        if (!inspectTab) return { success: false, error: "No NLM tab" };
+        const r = await chrome.scripting.executeScript({
+          target: { tabId: inspectTab.id },
+          func: () => {
+            const dialog = document.querySelector('[role="dialog"]') || document.body;
+            const inputs = [...document.querySelectorAll('input')].map(i => ({
+              type: i.type, id: i.id, name: i.name, cls: i.className.slice(0,80),
+              accept: i.accept, visible: window.getComputedStyle(i).display !== 'none',
+            }));
+            const buttons = [...document.querySelectorAll('button, [role="button"]')]
+              .filter(e => { const s = window.getComputedStyle(e); return s.display !== 'none' && s.visibility !== 'hidden'; })
+              .map(e => ({ tag: e.tagName, text: e.textContent?.trim().slice(0,60), cls: e.className?.slice(0,60) }));
+            return {
+              dialogHTML: dialog.innerHTML.slice(0, 4000),
+              inputs,
+              buttons: buttons.slice(0, 20),
+              bodyText: document.body.textContent.slice(0, 500),
+            };
+          },
+        });
+        return { success: true, data: r?.[0]?.result };
+      }
 
       case "n2z-clear-sync-state": {
         // Clear all sync states for this collection (across all notebooks)

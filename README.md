@@ -18,7 +18,8 @@ Note: Make sure your NotebookLM page is in English.
 ## Features
 
 ### Forward Sync (Zotero -> NotebookLM)
-- **PDF upload** — Local PDF attachments are uploaded directly to NotebookLM as sources via drag-and-drop
+- **Selective sync** — After selecting a collection, choose exactly which PDFs and URLs to upload before syncing
+- **PDF upload** — Local PDF attachments are uploaded directly to NotebookLM as sources
 - **URL sources** — Items without local files are synced as web sources using their best available URL
 - **Batch processing** — Multiple URLs are pasted in a single operation
 - **Auto-naming** — New notebooks are automatically named after the Zotero collection
@@ -36,6 +37,8 @@ Note: Make sure your NotebookLM page is in English.
 ### Robust UI
 - **Collapsed layout support** — Works on both wide (3-column) and narrow/vertical (tabbed) NotebookLM layouts
 - **Collection browser** — Hierarchical collection tree with item counts
+- **Real-time progress** — Live progress bar with per-file status and item counter during sync
+- **Progress persistence** — If you close and reopen the popup mid-sync, progress resumes automatically
 - **Select/deselect notes** — Choose which notes to import
 - **Mapping management** — View and manage collection-notebook mappings
 - **Reset sync state** — Clear sync history to re-sync items
@@ -117,11 +120,11 @@ Upload PDFs and URLs from a Zotero collection as sources in a NotebookLM noteboo
 2. Open [NotebookLM](https://notebooklm.google.com/) in your browser and create or open a notebook
 3. Click the **NZBridge extension icon** in your toolbar
 4. In the **"To NotebookLM"** tab, select a Zotero collection from the dropdown
-5. Review the item preview — it shows how many PDFs and URLs will be synced
+5. Review the item list — PDFs and URLs are shown in separate groups. Uncheck any items you don't want to upload
 
    ![NZBridge popup — collection selected, ready to sync](docs/01-forward-sync-ready.png)
 
-6. Click **"Sync to NotebookLM"** — the progress bar will show the current status
+6. Click **"Sync to NotebookLM"** — a live progress bar shows each file being uploaded
 
    ![Sync in progress](docs/03-forward-sync-progress.png)
 

@@ -1,7 +1,7 @@
 {
   "name": "nzbridge",
   "type": "module",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "NZBridge — Bidirectional sync between Zotero and Google NotebookLM",
   "config": {
     "addonName": "NZBridge",
