@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NZBridge — NotebookLM Zotero Bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Bidirectional sync between Zotero collections and Google NotebookLM notebooks",
   "permissions": [
     "activeTab",

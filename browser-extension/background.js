@@ -422,6 +422,7 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
         }
 
         // Upload in batches via base64 drop
+        const RETRY_BACKOFFS_MS = [1500, 3000, 5000];
         for (let bi = 0; bi < resolvedFiles.length; bi += FILE_BATCH_SIZE) {
           const batch = resolvedFiles.slice(bi, bi + FILE_BATCH_SIZE);
           const batchFileData = batch.map(f => ({
@@ -432,7 +433,15 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
 
           emitProgress("files", batch[0].item.title + (batch.length > 1 ? ` (+${batch.length - 1} more)` : ""));
 
-          const result = await injectFilesBatchViaCDP(tab.id, batchFileData);
+          let result = await injectFilesBatchViaCDP(tab.id, batchFileData);
+          let attempt = 1;
+          while (!result.success && attempt <= RETRY_BACKOFFS_MS.length) {
+            const backoff = RETRY_BACKOFFS_MS[attempt - 1];
+            console.warn(`[n2z] Upload failed for "${batch[0].item.title}" (attempt ${attempt}): ${result.error}. Retrying in ${backoff}ms…`);
+            await sleep(backoff);
+            result = await injectFilesBatchViaCDP(tab.id, batchFileData);
+            attempt++;
+          }
 
           for (const { item } of batch) {
             allResults.push({ title: item.title, success: result.success, error: result.error, type: "file" });
@@ -440,9 +449,10 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
             doneCount++;
           }
 
-          // Small gap between batches
+          // Gap between batches — gives NotebookLM's async upload queue time to drain
+          // before the next dialog open. 2000ms matches the URL→file transition delay.
           if (bi + FILE_BATCH_SIZE < resolvedFiles.length) {
-            await sleep(800);
+            await sleep(2000);
           }
         }
       } finally {
@@ -473,12 +483,22 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
 
   let message = `Synced ${successCount}/${newItems.length} items (${urlItems.length} URLs, ${fileItems.length} files).`;
   if (failCount > 0) {
-    const errors = allResults
-      .filter((r) => !r.success)
-      .slice(0, 3)
-      .map((r) => r.error)
+    const failed = allResults.filter((r) => !r.success);
+    const titlePreview = failed.slice(0, 5).map((r) => `"${r.title}"`).join(", ");
+    const remaining = failed.length - 5;
+    const titleSuffix = remaining > 0 ? `, +${remaining} more` : "";
+    message += ` ${failCount} failed: ${titlePreview}${titleSuffix}.`;
+
+    const errorCounts = new Map();
+    for (const r of failed) {
+      const key = r.error || "Unknown error";
+      errorCounts.set(key, (errorCounts.get(key) || 0) + 1);
+    }
+    const grouped = Array.from(errorCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([err, count]) => `${count}× "${err}"`)
       .join("; ");
-    message += ` Errors: ${errors}`;
+    message += ` Errors: ${grouped}`;
   }
 
   return {
@@ -751,6 +771,29 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     return { success: false, error: "No files provided" };
   }
 
+  // Step 0: If a prior dialog is still open (stale from a previous iteration),
+  // close it first so we start from a clean state. Without this, Step 1's
+  // "already-open" branch may use a stale dialog whose buttons have since
+  // been torn down, causing the upload-button query to miss.
+  const stalePresent = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+      return !!dialog;
+    },
+  });
+  if (stalePresent?.[0]?.result) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })),
+    });
+    await waitForInTab(
+      tabId,
+      () => !document.querySelector('[role="dialog"], mat-dialog-container'),
+      { timeoutMs: 3000, intervalMs: 150 }
+    );
+  }
+
   // Step 1: Ensure "Add sources" dialog is open. Poll up to 8s.
   const dialogOpened = await waitForInTab(
     tabId,
@@ -838,7 +881,7 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
 
     let fileChooserResolve;
     const fileChooserPromise = new Promise(r => { fileChooserResolve = r; });
-    const chooserTimeout = setTimeout(() => fileChooserResolve(null), 8000);
+    const chooserTimeout = setTimeout(() => fileChooserResolve(null), 15000);
     onEvent = (source, method, params) => {
       if (source.tabId === tabId && method === "Page.fileChooserOpened") {
         clearTimeout(chooserTimeout);
@@ -912,7 +955,13 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     });
     await waitForInTab(
       tabId,
-      () => !/drop your files|upload files/i.test(document.body.textContent || ""),
+      () => {
+        // Prefer the dialog element — body text can match "upload files" in
+        // toasts or the sources list after upload completes.
+        const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+        if (dialog) return false;
+        return !/drop your files|upload files/i.test(document.body.textContent || "");
+      },
       { timeoutMs: 10000, intervalMs: 200 }
     );
 
