@@ -126,7 +126,17 @@
     <p class="tab-description">Latest releases and upcoming features.</p>
 
     <div class="update-section">
-      <h3 class="update-version">v0.2.0 <span class="update-tag current">Current</span></h3>
+      <h3 class="update-version">v0.2.1 <span class="update-tag current">Current</span></h3>
+      <ul class="update-list">
+        <li>Fix: PDF uploads no longer silently drop files when syncing large collections — all PDFs now upload reliably</li>
+        <li>Up to 3 automatic retries per file with backoff if the upload dialog doesn't respond in time</li>
+        <li>Better error messages — shows exactly which PDFs failed and how many, instead of truncating to 3 errors</li>
+        <li>Note: upload time per file may be slightly longer than v0.2.0 to ensure reliability. Actual time depends on PDF size, your internet connection speed, and NotebookLM's response time</li>
+      </ul>
+    </div>
+
+    <div class="update-section">
+      <h3 class="update-version">v0.2.0</h3>
       <ul class="update-list">
         <li>Selective sync — choose exactly which PDFs and URLs to upload before syncing</li>
         <li>Real-time progress bar with per-file status and item counter</li>
