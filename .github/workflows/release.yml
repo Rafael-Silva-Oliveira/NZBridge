@@ -1,3 +1,33 @@
+# Release Workflow
+#
+# Triggered automatically when a version tag is pushed.
+#
+# Usage:
+#   1. Bump versions (must match exactly):
+#        zotero-plugin/package.json  → "version": "X.Y.Z"
+#        browser-extension/manifest.json → "version": "X.Y.Z"
+#
+#   2. Commit and push:
+#        git add zotero-plugin/package.json browser-extension/manifest.json
+#        git commit -m "Release vX.Y.Z: <short description>"
+#        git push origin main
+#
+#   3. Tag (must match package.json version exactly, with v prefix):
+#        git tag vX.Y.Z
+#        git push origin vX.Y.Z
+#
+# The workflow will:
+#   - Fail fast if the tag version doesn't match zotero-plugin/package.json
+#   - Build the Zotero plugin (.xpi + update.json)
+#   - Zip the browser extension
+#   - Create a GitHub Release with all artifacts attached
+#
+# Artifacts attached to each release:
+#   - nz-bridge.xpi                          (Zotero plugin)
+#   - update.json                             (Zotero auto-update manifest)
+#   - NZBridge-browser-extension-vX.Y.Z.zip  (Chrome/Edge extension)
+#   - Source code .tar.gz / .zip             (auto-attached by GitHub)
+
 name: Release
 
 on:
