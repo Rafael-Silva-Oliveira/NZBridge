@@ -2,6 +2,11 @@
   <img src="docs/social-preview.png" alt="NZBridge — NotebookLM Zotero Bridge" width="640">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Rafael-Silva-Oliveira/NZBridge/releases"><img src="https://img.shields.io/github/downloads/Rafael-Silva-Oliveira/NZBridge/total?label=downloads&logo=github" alt="GitHub all releases"></a>
+  <a href="https://github.com/Rafael-Silva-Oliveira/NZBridge/releases/latest"><img src="https://img.shields.io/github/v/release/Rafael-Silva-Oliveira/NZBridge?label=latest&logo=github" alt="Latest release"></a>
+  <a href="https://github.com/Rafael-Silva-Oliveira/NZBridge/releases/latest"><img src="https://img.shields.io/github/downloads/Rafael-Silva-Oliveira/NZBridge/latest/total?label=latest%20downloads&logo=github" alt="Latest release downloads"></a>
+</p>
 
 ---
 
