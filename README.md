@@ -8,13 +8,6 @@
   <a href="https://github.com/Rafael-Silva-Oliveira/NZBridge/releases/latest"><img src="https://img.shields.io/github/downloads/Rafael-Silva-Oliveira/NZBridge/latest/total?label=latest%20downloads&logo=github" alt="Latest release downloads"></a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/Rafael-Silva-Oliveira/NZBridge/releases"><img src="https://img.shields.io/github/downloads/Rafael-Silva-Oliveira/NZBridge/total?label=downloads&logo=github" alt="GitHub all releases"></a>
-  <a href="https://github.com/Rafael-Silva-Oliveira/NZBridge/releases/latest"><img src="https://img.shields.io/github/v/release/Rafael-Silva-Oliveira/NZBridge?label=latest&logo=github" alt="Latest release"></a>
-  <a href="https://github.com/Rafael-Silva-Oliveira/NZBridge/releases/latest"><img src="https://img.shields.io/github/downloads/Rafael-Silva-Oliveira/NZBridge/latest/total?label=latest%20downloads&logo=github" alt="Latest release downloads"></a>
-</p>
-
-
 ---
 
 NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/) and [Google NotebookLM](https://notebooklm.google.com/). Push your research library into NotebookLM for AI-powered analysis, then pull your generated notes back into Zotero — all without leaving your browser.
