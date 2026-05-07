@@ -5,6 +5,7 @@
 
 import {
   getCollectionTree,
+  getAllLibrariesTree,
   getExportableItems,
   getFileAsBase64,
   debugCollectionItems,
@@ -67,6 +68,24 @@ class CollectionsEndpoint {
     try {
       const body = typeof data === "string" ? JSON.parse(data) : data;
       const tree = getCollectionTree(body?.libraryId);
+      success(sendResponseCallback, tree);
+    } catch (e: any) {
+      error(sendResponseCallback, 500, e.message);
+    }
+  }
+}
+
+/**
+ * POST /n2z/libraries — List all locally-synced libraries (user + groups) with their collection trees
+ */
+class LibrariesEndpoint {
+  supportedMethods = ["POST"];
+  supportedDataTypes = ["application/json"];
+  permitBookmarklet = false;
+
+  init(_urlObj: any, _data: any, sendResponseCallback: Function) {
+    try {
+      const tree = getAllLibrariesTree();
       success(sendResponseCallback, tree);
     } catch (e: any) {
       error(sendResponseCallback, 500, e.message);
@@ -273,6 +292,7 @@ class DebugCollectionsEndpoint {
 // Endpoint registry
 const endpoints: Record<string, any> = {
   "/n2z/status": StatusEndpoint,
+  "/n2z/libraries": LibrariesEndpoint,
   "/n2z/collections": CollectionsEndpoint,
   "/n2z/list": ListEndpoint,
   "/n2z/file": FileEndpoint,

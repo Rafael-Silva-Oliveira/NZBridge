@@ -64,6 +64,10 @@ async function checkZoteroConnection() {
   }
 }
 
+async function getLibraries() {
+  return zoteroRequest("/n2z/libraries", {});
+}
+
 async function getCollections(libraryId) {
   return zoteroRequest("/n2z/collections", { libraryId });
 }
@@ -151,7 +155,7 @@ function extractNotebookIdFromUrl(url) {
  * so the popup can display what will be synced. Actual injection
  * happens per-item via addUrlSource or file injection.
  */
-async function forwardSync(collectionId, collectionName, selectedItemKeys) {
+async function forwardSync(collectionId, collectionName, selectedItemKeys, libraryId, libraryName) {
   // 1. Resolve which NotebookLM tab to target
   const { tab, reason } = await resolveNotebookLMTab();
   if (!tab) {
@@ -186,7 +190,7 @@ async function forwardSync(collectionId, collectionName, selectedItemKeys) {
 
   // Run the sync in the background — do NOT await it here.
   // The popup polls for progress via n2z-sync-status.
-  forwardSyncImpl(tab, notebookId, collectionId, collectionName, selectedItemKeys)
+  forwardSyncImpl(tab, notebookId, collectionId, collectionName, selectedItemKeys, libraryId, libraryName)
     .then((result) => {
       syncProgress.set(tab.id, { ...syncProgress.get(tab.id), done: true, result });
       broadcastProgress({ tabId: tab.id, done: true, result });
@@ -203,7 +207,7 @@ async function forwardSync(collectionId, collectionName, selectedItemKeys) {
   return { success: true, started: true, tabId: tab.id };
 }
 
-async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, selectedItemKeys) {
+async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, selectedItemKeys, libraryId, libraryName) {
   // 1b. Set notebook title to the collection name (user can change it later)
   if (collectionName) {
     await chrome.scripting.executeScript({
@@ -470,6 +474,8 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
   await setMapping({
     collectionId,
     collectionName,
+    libraryId,
+    libraryName,
     notebookId,
     notebookUrl: tab.url,
     lastSyncForward: new Date().toISOString(),
@@ -1737,6 +1743,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "n2z-check-connection":
         return { connected: await checkZoteroConnection() };
 
+      case "n2z-get-libraries":
+        return getLibraries();
+
       case "n2z-get-collections":
         return getCollections(message.libraryId);
 
@@ -1747,7 +1756,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return removeMapping(message.collectionId);
 
       case "n2z-forward-sync":
-        return forwardSync(message.collectionId, message.collectionName, message.selectedItemKeys);
+        return forwardSync(message.collectionId, message.collectionName, message.selectedItemKeys, message.libraryId, message.libraryName);
 
       case "n2z-sync-status": {
         const prog = syncProgress.get(message.tabId);

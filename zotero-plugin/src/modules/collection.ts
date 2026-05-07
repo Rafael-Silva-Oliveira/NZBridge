@@ -16,6 +16,15 @@ export interface CollectionInfo {
   parentID: number | false;
   children: CollectionInfo[];
   itemCount: number;
+  libraryId?: number;
+  libraryName?: string;
+}
+
+export interface LibraryTree {
+  libraryId: number;
+  libraryName: string;
+  libraryType: "user" | "group";
+  collections: CollectionInfo[];
 }
 
 export interface ExportableItem {
@@ -56,6 +65,34 @@ export interface DebugItemInfo {
     filePath: string | false;
     fileExists: boolean;
   }[];
+}
+
+/**
+ * Returns trees for all locally-synced libraries (user + every group).
+ * Skips libraries that have no collections.
+ */
+export function getAllLibrariesTree(): LibraryTree[] {
+  const result: LibraryTree[] = [];
+
+  const userLibID = Zotero.Libraries.userLibraryID;
+  result.push({
+    libraryId: userLibID,
+    libraryName: "My Library",
+    libraryType: "user",
+    collections: getCollectionTree(userLibID),
+  });
+
+  for (const group of Zotero.Groups.getAll()) {
+    const libID = group.libraryID;
+    result.push({
+      libraryId: libID,
+      libraryName: group.name,
+      libraryType: "group",
+      collections: getCollectionTree(libID),
+    });
+  }
+
+  return result;
 }
 
 /**

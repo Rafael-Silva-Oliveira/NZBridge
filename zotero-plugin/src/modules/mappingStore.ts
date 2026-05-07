@@ -6,6 +6,8 @@
 export interface CollectionMapping {
   collectionId: number;
   collectionName: string;
+  libraryId?: number;
+  libraryName?: string;
   notebookId: string;
   notebookUrl: string;
   lastSyncForward: string | null;
