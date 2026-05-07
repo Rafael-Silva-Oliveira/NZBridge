@@ -7,11 +7,34 @@ document.addEventListener("DOMContentLoaded", init);
 async function init() {
   setupTabs();
   await checkConnection();
-  await loadCollections();
+  await loadLibraries();
   await loadNotebookInfo();
   await loadMappings();
   setupEventListeners();
+  await initPrereqBanners();
   await resumeInProgressSync();
+}
+
+async function initPrereqBanners() {
+  const { prereqCollapsed } = await chrome.storage.local.get("prereqCollapsed");
+  const banners = [
+    { banner: "prereq-banner",        btn: "prereq-toggle" },
+    { banner: "prereq-banner-import", btn: "prereq-toggle-import" },
+  ];
+  for (const { banner, btn } of banners) {
+    const el = document.getElementById(banner);
+    const toggleBtn = document.getElementById(btn);
+    if (!el || !toggleBtn) continue;
+    if (prereqCollapsed) el.classList.add("collapsed");
+    toggleBtn.addEventListener("click", async () => {
+      const isCollapsed = el.classList.toggle("collapsed");
+      // Mirror state to the other banner instantly
+      document.querySelectorAll(".prereq-banner").forEach(b => {
+        isCollapsed ? b.classList.add("collapsed") : b.classList.remove("collapsed");
+      });
+      await chrome.storage.local.set({ prereqCollapsed: isCollapsed });
+    });
+  }
 }
 
 async function resumeInProgressSync() {
@@ -107,40 +130,73 @@ async function checkConnection() {
   }
 }
 
-// ─── Collection loading ──────────────────────────────────────────────
+// ─── Library + Collection loading ───────────────────────────────────
 
-async function loadCollections() {
-  const result = await sendMessage({ type: "n2z-get-collections" });
+// Cache: Array<{ libraryId, libraryName, libraryType, collections }>
+window._libraryTree = [];
 
-  const selects = [
-    document.getElementById("collection-select"),
-    document.getElementById("import-collection-select"),
-  ];
+async function loadLibraries() {
+  let result = await sendMessage({ type: "n2z-get-libraries" });
 
-  for (const select of selects) {
-    select.innerHTML = "";
-
-    if (!result.success || !result.data) {
-      select.innerHTML = '<option value="">No collections found</option>';
-      return;
+  // Fallback: older plugin version without /n2z/libraries — use the flat collection list
+  if (!result.success || !result.data || result.data.length === 0) {
+    const fallback = await sendMessage({ type: "n2z-get-collections" });
+    if (fallback.success && fallback.data) {
+      result = {
+        success: true,
+        data: [{ libraryId: 0, libraryName: "My Library", libraryType: "user", collections: fallback.data }],
+      };
     }
-
-    select.innerHTML = '<option value="">Select a collection...</option>';
-    populateCollectionOptions(select, result.data, 0);
   }
+
+  const syncLibSel   = document.getElementById("library-select");
+  const importLibSel = document.getElementById("import-library-select");
+
+  if (!result.success || !result.data || result.data.length === 0) {
+    const msg = '<option value="">No libraries found</option>';
+    syncLibSel.innerHTML = msg;
+    importLibSel.innerHTML = msg;
+    document.getElementById("collection-select").innerHTML = '<option value="">No collections found</option>';
+    document.getElementById("import-collection-select").innerHTML = '<option value="">No collections found</option>';
+    return;
+  }
+
+  window._libraryTree = result.data;
+
+  for (const [libSel, colSel] of [
+    [syncLibSel,   document.getElementById("collection-select")],
+    [importLibSel, document.getElementById("import-collection-select")],
+  ]) {
+    libSel.innerHTML = "";
+    for (const lib of result.data) {
+      const opt = document.createElement("option");
+      opt.value = lib.libraryId;
+      opt.textContent = lib.libraryType === "group" ? `Group: ${lib.libraryName}` : lib.libraryName;
+      opt.dataset.libraryName = lib.libraryName;
+      opt.dataset.libraryType = lib.libraryType;
+      libSel.appendChild(opt);
+    }
+    // Populate collections for the initially-selected library
+    populateCollectionsForLibrary(libSel, colSel);
+  }
+}
+
+function populateCollectionsForLibrary(libSelect, colSelect) {
+  const libraryId = parseInt(libSelect.value);
+  const lib = window._libraryTree.find((l) => l.libraryId === libraryId);
+  colSelect.innerHTML = '<option value="">Select a collection...</option>';
+  if (lib) populateCollectionOptions(colSelect, lib.collections, 0);
 }
 
 function populateCollectionOptions(select, collections, depth) {
   for (const col of collections) {
     const option = document.createElement("option");
     option.value = col.id;
-    const indent = "\u00A0\u00A0".repeat(depth);
+    const indent = "  ".repeat(depth);
     const prefix = depth > 0 ? "└ " : "";
-    option.textContent =
-      indent + prefix + col.name + ` (${col.itemCount})`;
+    option.textContent = indent + prefix + col.name + ` (${col.itemCount})`;
     option.dataset.name = col.name;
     select.appendChild(option);
-
     if (col.children && col.children.length > 0) {
       populateCollectionOptions(select, col.children, depth + 1);
     }
@@ -321,9 +377,14 @@ async function loadMappings() {
       ? new Date(mapping.lastSyncForward).toLocaleDateString()
       : "Never";
 
+    const libraryBadge = mapping.libraryName && mapping.libraryName !== "My Library"
+      ? `<div class="mapping-library">Library: ${escapeHtml(mapping.libraryName)}</div>`
+      : "";
+
     item.innerHTML = `
       <div class="mapping-info">
         <div class="mapping-collection">${escapeHtml(mapping.collectionName)}</div>
+        ${libraryBadge}
         <div class="mapping-notebook">Notebook: ${escapeHtml(mapping.notebookId || "Unknown")}</div>
         <div class="mapping-sync">Last sync: ${lastSync}</div>
       </div>
@@ -345,6 +406,21 @@ async function loadMappings() {
 // ─── Event listeners ─────────────────────────────────────────────────
 
 function setupEventListeners() {
+  // Library dropdowns repopulate their matching collection select on change
+  const syncLibSel   = document.getElementById("library-select");
+  const syncColSel   = document.getElementById("collection-select");
+  const importLibSel = document.getElementById("import-library-select");
+  const importColSel = document.getElementById("import-collection-select");
+
+  syncLibSel.addEventListener("change", () => {
+    populateCollectionsForLibrary(syncLibSel, syncColSel);
+    previewItems(""); // reset preview when library changes
+  });
+
+  importLibSel.addEventListener("change", () => {
+    populateCollectionsForLibrary(importLibSel, importColSel);
+  });
+
   const syncSelect = document.getElementById("collection-select");
   syncSelect.addEventListener("change", () => {
     previewItems(syncSelect.value);
@@ -422,11 +498,15 @@ async function handleForwardSync() {
   try {
     // Fire-and-forget: background starts sync and returns immediately
     const selectedItemKeys = getSelectedItemKeys();
+    const libSel = document.getElementById("library-select");
+    const selectedLibOpt = libSel.options[libSel.selectedIndex];
     const startResult = await sendMessage({
       type: "n2z-forward-sync",
       collectionId,
       collectionName,
       selectedItemKeys: selectedItemKeys.length > 0 ? selectedItemKeys : null,
+      libraryId: parseInt(libSel.value) || null,
+      libraryName: selectedLibOpt?.dataset.libraryName || null,
     }, 10000);
 
     if (!startResult || !startResult.started) {
