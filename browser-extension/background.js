@@ -282,9 +282,13 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
       const clickables = document.querySelectorAll(
         '[role="tab"], button, [role="button"], a, [class*="tab"]'
       );
+      const sourceTabLabels = [
+        "sources", "source", "来源", "來源", "ソース", "情報源", "소스", "출처",
+        "fuentes", "sources", "quellen", "fontes", "fonti", "bronnen", "sumber",
+      ];
       for (const el of clickables) {
-        const text = getCleanText(el).trim();
-        if (/^Sources$/i.test(text)) {
+        const text = getCleanText(el).trim().toLowerCase();
+        if (sourceTabLabels.includes(text)) {
           el.click();
           return true;
         }
@@ -325,11 +329,25 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
   );
 
   if (newItems.length === 0) {
+    const mapping = {
+      collectionId,
+      collectionName,
+      libraryId,
+      libraryName,
+      notebookId,
+      notebookUrl: tab.url,
+      lastSyncForward: new Date().toISOString(),
+      lastSyncBackward: null,
+      syncedItemHashes: syncedHashes,
+      importedNoteIds: [],
+    };
+    await setMapping(mapping);
     return {
       success: true,
-      message: `All ${items.length} items already synced to this notebook.`,
+      message: `All ${items.length} items are already synced to this notebook.`,
       synced: 0,
       total: items.length,
+      mapping,
     };
   }
 
@@ -349,7 +367,7 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
   // 5a. Add ALL URL sources at once (NotebookLM supports multiple URLs
   // separated by newlines in a single paste)
   if (urlItems.length > 0) {
-    emitProgress("urls", `Adding ${urlItems.length} URL${urlItems.length > 1 ? "s" : ""}…`);
+    emitProgress("urls", `Adding ${urlItems.length} URL${urlItems.length > 1 ? "s" : ""}...`);
     try {
       const urls = urlItems.map((i) => i.url);
       const result = await addUrlSourcesBatch(tab.id, urls);
@@ -471,7 +489,7 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
   });
 
   // 7. Update mapping in Zotero
-  await setMapping({
+  const mapping = {
     collectionId,
     collectionName,
     libraryId,
@@ -482,7 +500,8 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
     lastSyncBackward: null,
     syncedItemHashes: syncedHashes,
     importedNoteIds: [],
-  });
+  };
+  await setMapping(mapping);
 
   const successCount = allResults.filter((r) => r.success).length;
   const failCount = allResults.filter((r) => !r.success).length;
@@ -502,7 +521,7 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
     }
     const grouped = Array.from(errorCounts.entries())
       .sort((a, b) => b[1] - a[1])
-      .map(([err, count]) => `${count}× "${err}"`)
+      .map(([err, count]) => `${count}x "${err}"`)
       .join("; ");
     message += ` Errors: ${grouped}`;
   }
@@ -514,6 +533,7 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
     failed: failCount,
     total: items.length,
     results: allResults,
+    mapping,
   };
 }
 
@@ -548,6 +568,21 @@ async function addUrlSourcesBatch(tabId, urls) {
     target: { tabId },
     func: () => {
       const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
+      const hasAny = (text, labels) => labels.some((label) => text.includes(label));
+      const addSourceLabels = [
+        "add source", "add sources", "add a source",
+        "添加来源", "添加源", "新增来源", "加入来源",
+        "添加來源", "新增來源", "加入來源",
+        "ソースを追加", "情報源を追加",
+        "소스 추가", "출처 추가",
+        "añadir fuente", "añadir fuentes", "agregar fuente", "agregar fuentes",
+        "ajouter une source", "ajouter des sources",
+        "quelle hinzufügen", "quellen hinzufügen",
+        "adicionar fonte", "adicionar fontes",
+        "aggiungi fonte", "aggiungi fonti",
+        "bron toevoegen", "bronnen toevoegen",
+        "tambahkan sumber",
+      ];
 
       const candidates = document.querySelectorAll('button, [role="button"], a, [tabindex="0"]');
       for (const el of candidates) {
@@ -555,7 +590,7 @@ async function addUrlSourcesBatch(tabId, urls) {
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).toLowerCase();
         const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-        if (clean.includes("add source") || aria.includes("add source")) {
+        if (hasAny(clean, addSourceLabels) || hasAny(aria, addSourceLabels)) {
           el.click();
           return { success: true, clicked: clean || aria };
         }
@@ -563,7 +598,7 @@ async function addUrlSourcesBatch(tabId, urls) {
       const visible = Array.from(candidates)
         .filter(e => { const s = window.getComputedStyle(e); return s.display !== "none" && s.visibility !== "hidden"; })
         .map(e => getCleanText(e)).filter(t => t && t.length < 40).slice(0, 10);
-      return { success: false, error: "No 'Add sources' button. Visible: " + visible.join(", ") };
+      return { success: false, error: "No Add sources button found. Visible: " + visible.join(", ") };
     },
   });
   steps.step1 = step1?.[0]?.result;
@@ -576,6 +611,19 @@ async function addUrlSourcesBatch(tabId, urls) {
     target: { tabId },
     func: () => {
       const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
+      const websiteLabels = [
+        "websites", "website", "web",
+        "网站", "网页", "網址", "網站", "網頁",
+        "ウェブサイト", "ウェブ",
+        "웹사이트", "웹",
+        "sitios web", "sitio web",
+        "site web", "sites web",
+        "webseite", "webseiten",
+        "sites", "site",
+        "siti web", "sito web",
+        "websites", "webpagina",
+        "situs web",
+      ];
 
       // Look broadly for any clickable element with "Website" text
       const allClickable = document.querySelectorAll('button, [role="button"], [role="menuitem"], [role="option"], [tabindex="0"], a, div, span');
@@ -584,7 +632,7 @@ async function addUrlSourcesBatch(tabId, urls) {
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).toLowerCase();
         // Must contain "website" and be a reasonably small element (not a huge container)
-        if ((clean === "websites" || clean === "website") && el.textContent.length < 100) {
+        if (websiteLabels.includes(clean) && el.textContent.length < 100) {
           el.click();
           return { success: true, clicked: clean, tag: el.tagName };
         }
@@ -594,7 +642,7 @@ async function addUrlSourcesBatch(tabId, urls) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const raw = (el.textContent || "").trim().toLowerCase();
-        if (raw.length < 100 && raw.includes("website")) {
+        if (raw.length < 100 && websiteLabels.some((label) => raw.includes(label))) {
           el.click();
           return { success: true, clicked: raw.substring(0, 50), tag: el.tagName, method: "contains-website" };
         }
@@ -603,7 +651,7 @@ async function addUrlSourcesBatch(tabId, urls) {
         .filter(e => { const s = window.getComputedStyle(e); return s.display !== "none" && s.visibility !== "hidden"; })
         .map(e => { const c = getCleanText(e); const r = e.textContent?.trim()||""; return c.length < 50 ? (c === r ? c : c + " [" + r.substring(0,30) + "]") : ""; })
         .filter(t => t && t.length > 0).slice(0, 15);
-      return { success: false, error: "No 'Websites' option found. Visible: " + visible.join(", ") };
+      return { success: false, error: "No Websites option found. Visible: " + visible.join(", ") };
     },
   });
   steps.step2 = step2?.[0]?.result;
@@ -619,6 +667,19 @@ async function addUrlSourcesBatch(tabId, urls) {
     target: { tabId },
     args: [urlsText],
     func: (urlsText) => {
+      const urlFieldLabels = [
+        "paste", "link", "url",
+        "粘贴", "貼上", "链接", "連結", "网址", "網址",
+        "貼り付け", "リンク", "url",
+        "붙여넣", "링크",
+        "pegar", "enlace", "url",
+        "coller", "lien",
+        "einfügen", "link",
+        "colar", "link",
+        "incolla", "link",
+        "plakken", "link",
+        "tempel", "tautan",
+      ];
       // Priority 1: find textarea with "paste" in placeholder (the URL paste area)
       let field = null;
       const textareas = document.querySelectorAll("textarea");
@@ -626,7 +687,7 @@ async function addUrlSourcesBatch(tabId, urls) {
         const style = window.getComputedStyle(ta);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const ph = (ta.getAttribute("placeholder") || "").toLowerCase();
-        if (ph.includes("paste") || ph.includes("link") || ph.includes("url")) {
+        if (urlFieldLabels.some((label) => ph.includes(label))) {
           field = ta;
           break;
         }
@@ -696,6 +757,20 @@ async function addUrlSourcesBatch(tabId, urls) {
     target: { tabId },
     func: () => {
       const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
+      const hasAny = (text, labels) => labels.some((label) => text.includes(label));
+      const insertLabels = [
+        "insert", "submit", "add source", "add sources",
+        "插入", "提交", "添加来源", "新增來源",
+        "挿入", "追加",
+        "삽입", "추가",
+        "insertar", "añadir", "agregar",
+        "insérer", "ajouter",
+        "einfügen", "hinzufügen",
+        "inserir", "adicionar",
+        "inserisci", "aggiungi",
+        "invoegen", "toevoegen",
+        "masukkan", "tambahkan",
+      ];
 
       // Search ALL elements, not just buttons — NotebookLM may use divs or spans
       const allClickable = document.querySelectorAll("button, [role='button'], [tabindex='0'], a");
@@ -704,8 +779,8 @@ async function addUrlSourcesBatch(tabId, urls) {
       for (const el of allClickable) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
-        const clean = getCleanText(el).trim();
-        if (clean === "Insert" || clean === "insert") {
+        const clean = getCleanText(el).trim().toLowerCase();
+        if (insertLabels.includes(clean)) {
           el.click();
           return { success: true, clicked: clean };
         }
@@ -716,7 +791,7 @@ async function addUrlSourcesBatch(tabId, urls) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).trim().toLowerCase();
-        if (clean.includes("insert") && clean.length < 30) {
+        if (hasAny(clean, insertLabels) && clean.length < 30) {
           el.click();
           return { success: true, clicked: clean };
         }
@@ -728,7 +803,7 @@ async function addUrlSourcesBatch(tabId, urls) {
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).trim().toLowerCase();
         const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-        if (clean === "submit" || clean === "add source" || aria.includes("insert") || aria.includes("submit")) {
+        if (hasAny(clean, insertLabels) || hasAny(aria, insertLabels)) {
           el.click();
           return { success: true, clicked: clean || aria };
         }
@@ -805,8 +880,23 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     tabId,
     () => {
       const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
+      const hasAny = (text, labels) => labels.some((label) => text.includes(label));
+      const addSourceLabels = [
+        "add source", "add sources", "add a source",
+        "添加来源", "添加源", "新增来源", "加入来源",
+        "添加來源", "新增來源", "加入來源",
+        "ソースを追加", "情報源を追加",
+        "소스 추가", "출처 추가",
+        "añadir fuente", "añadir fuentes", "agregar fuente", "agregar fuentes",
+        "ajouter une source", "ajouter des sources",
+        "quelle hinzufügen", "quellen hinzufügen",
+        "adicionar fonte", "adicionar fontes",
+        "aggiungi fonte", "aggiungi fonti",
+        "bron toevoegen", "bronnen toevoegen",
+        "tambahkan sumber",
+      ];
       const body = document.body.textContent || "";
-      if (/drop your files/i.test(body) || /upload files/i.test(body)) {
+      if (/drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(body)) {
         return { success: true, method: "already-open" };
       }
       const candidates = document.querySelectorAll('button, [role="button"], a, [tabindex="0"]');
@@ -815,7 +905,7 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).toLowerCase();
         const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-        if (clean.includes("add source") || aria.includes("add source")) {
+        if (hasAny(clean, addSourceLabels) || hasAny(aria, addSourceLabels)) {
           el.click();
           return { success: true, method: "clicked" };
         }
@@ -832,7 +922,7 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
   if (dialogOpened.method !== "already-open") {
     const ready = await waitForInTab(
       tabId,
-      () => /drop your files|upload files/i.test(document.body.textContent || ""),
+      () => /drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(document.body.textContent || ""),
       { timeoutMs: 5000, intervalMs: 100 }
     );
     if (!ready) return { success: false, error: "Upload dialog did not appear" };
@@ -846,12 +936,26 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     target: { tabId },
     func: () => {
       const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
+      const hasAny = (text, labels) => labels.some((label) => text.includes(label));
+      const uploadLabels = [
+        "upload files", "upload file", "upload",
+        "上传文件", "上传", "上傳檔案", "上傳文件", "上傳",
+        "ファイルをアップロード", "アップロード",
+        "파일 업로드", "업로드",
+        "subir archivos", "subir archivo", "subir",
+        "téléverser des fichiers", "téléverser", "importer des fichiers",
+        "dateien hochladen", "datei hochladen", "hochladen",
+        "carregar arquivos", "carregar ficheiros", "carregar",
+        "carica file", "carica",
+        "bestanden uploaden", "uploaden",
+        "unggah file", "unggah",
+      ];
       const all = document.querySelectorAll('button, [role="button"], [tabindex="0"], a, label, div, span');
       for (const el of all) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).toLowerCase();
-        if (clean === "upload files") {
+        if (uploadLabels.includes(clean)) {
           const rect = el.getBoundingClientRect();
           return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, text: clean };
         }
@@ -861,7 +965,7 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).toLowerCase();
-        if (clean.includes("upload") && clean.length < 30) {
+        if (hasAny(clean, uploadLabels) && clean.length < 40) {
           const rect = el.getBoundingClientRect();
           return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, text: clean };
         }
@@ -966,7 +1070,7 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
         // toasts or the sources list after upload completes.
         const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
         if (dialog) return false;
-        return !/drop your files|upload files/i.test(document.body.textContent || "");
+        return !/drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(document.body.textContent || "");
       },
       { timeoutMs: 10000, intervalMs: 200 }
     );
@@ -1025,13 +1129,17 @@ async function extractNotesFromTab(tabId) {
         }
         return result;
       };
-      // Look for a tab/button labeled "Studio"
+      // Look for a tab/button labeled "Studio" / "工作室".
       const clickables = document.querySelectorAll(
         '[role="tab"], button, [role="button"], a, [class*="tab"]'
       );
+      const studioLabels = [
+        "studio", "工作室", "工作區", "スタジオ", "스튜디오",
+        "estudio", "atelier", "labor", "estúdio",
+      ];
       for (const el of clickables) {
-        const text = getCleanText(el).trim();
-        if (/^Studio$/i.test(text)) {
+        const text = getCleanText(el).trim().toLowerCase();
+        if (studioLabels.includes(text)) {
           el.click();
           return true;
         }
@@ -1068,6 +1176,7 @@ async function extractNotesFromTab(tabId) {
       const seenCards = new Set();
       const seenTitles = [];
       const normalize = (t) => t.replace(/\s+/g, " ").trim().toLowerCase();
+      const relativeTimeRe = /(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제)/i;
       const foundNotes = [];
 
       for (const el of allElements) {
@@ -1076,7 +1185,7 @@ async function extractNotesFromTab(tabId) {
 
         const rawText = el.textContent?.trim() || "";
         if (rawText.length > 2000 || rawText.length < 8 || el.children.length > 20) continue;
-        if (!/\d+[mhd]\s*ago/i.test(rawText)) continue;
+        if (!relativeTimeRe.test(rawText)) continue;
 
         let card = el;
         for (let i = 0; i < 3; i++) {
@@ -1095,12 +1204,12 @@ async function extractNotesFromTab(tabId) {
         const lines = cleanText.split(/\n/).map(l => l.trim()).filter(Boolean);
         let title = "";
         let noteType = "saved-note";
-        const typePattern = /^(Explainer|Deep Dive|Study Guide|Briefing|FAQ|Timeline|Outline|Report|Audio Overview|New Note)$/i;
+        const typePattern = /^(Explainer|Deep Dive|Study Guide|Briefing|FAQ|Timeline|Outline|Report|Audio Overview|New Note|说明|深度解析|学习指南|简报|常见问题|时间轴|大纲|报告|音频概览|新笔记)$/i;
 
         for (const line of lines) {
           if (line.length <= 2) continue;
-          if (/^\d+[mhd]\s*ago$/i.test(line)) continue;
-          if (/^\d+\s*sources?$/i.test(line)) continue;
+          if (relativeTimeRe.test(line)) continue;
+          if (/^(\d+\s*sources?|\d+\s*个?来源|\d+\s*個?來源)$/i.test(line)) continue;
           if (/^[·•\-–—\s]+$/.test(line)) continue;
           if (typePattern.test(line)) { noteType = line; continue; }
           if (!title) title = line;
@@ -1110,14 +1219,14 @@ async function extractNotesFromTab(tabId) {
 
         // Clean trailing junk from title: timestamps, "Add note", other note names
         title = title
-          .replace(/\s*\d+[mhd]\s*ago\b.*/i, "")   // "10h ago" and everything after
-          .replace(/\s*Add\s+note\b.*/i, "")         // "Add note" and everything after
-          .replace(/\s*\d+\s*sources?\b.*/i, "")     // "2 sources" and everything after
+          .replace(/\s*(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제).*/i, "")   // timestamp and everything after
+          .replace(/\s*(Add\s+note|添加笔记).*/i, "")         // "Add note" and everything after
+          .replace(/\s*(\d+\s*sources?|\d+\s*个?来源|\d+\s*個?來源).*/i, "")     // source count and everything after
           .trim();
 
         if (!title || title.length < 3) continue;
         const lower = title.toLowerCase();
-        if (/^(sources?|chat|studio|notes?|settings?|share|help|add\s|create\s)$/i.test(lower)) continue;
+        if (/^(sources?|chat|studio|notes?|settings?|share|help|add\s|create\s|来源|聊天|工作室|笔记|设置|分享|帮助|添加|创建)$/i.test(lower)) continue;
 
         // Early dedup: skip if we already found a note with this title
         const normTitle = normalize(title);
@@ -1125,14 +1234,14 @@ async function extractNotesFromTab(tabId) {
         seenTitles.push(normTitle);
 
         if (noteType === "saved-note") {
-          const m = cleanText.match(/(Explainer|Deep Dive|Study Guide|Briefing|FAQ|Timeline|Outline|Report|Audio Overview)/i);
+          const m = cleanText.match(/(Explainer|Deep Dive|Study Guide|Briefing|FAQ|Timeline|Outline|Report|Audio Overview|说明|深度解析|学习指南|简报|常见问题|时间轴|大纲|报告|音频概览)/i);
           if (m) noteType = m[1];
         }
 
         const lt = noteType.toLowerCase();
-        if (lt.includes("audio") || lt.includes("deep dive")) continue;
+        if (lt.includes("audio") || lt.includes("deep dive") || lt.includes("音频") || lt.includes("深度解析")) continue;
 
-        const tsMatch = cleanText.match(/(\d+[mhd])\s*ago/i);
+        const tsMatch = cleanText.match(relativeTimeRe);
 
         foundNotes.push({
           title: title.substring(0, 200),
@@ -1197,6 +1306,7 @@ async function extractNotesFromTab(tabId) {
         const allElements = document.querySelectorAll("*:not(style):not(script):not(link):not(meta):not(head)");
         let bestCard = null;
         let bestSize = Infinity;
+        const relativeTimeRe = /(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제)/i;
 
         for (const el of allElements) {
           const style = window.getComputedStyle(el);
@@ -1204,7 +1314,7 @@ async function extractNotesFromTab(tabId) {
           const rawText = el.textContent?.trim() || "";
           if (rawText.length > 2000 || rawText.length < 8) continue;
           // Must contain the title and a timestamp pattern (card indicator)
-          if (!rawText.includes(targetTitle.substring(0, 30)) || !/\d+[mhd]\s*ago/i.test(rawText)) continue;
+          if (!rawText.includes(targetTitle.substring(0, 30)) || !relativeTimeRe.test(rawText)) continue;
 
           // Prefer the smallest element that contains the full title
           // (most specific = the actual card, not a parent container)
@@ -1285,9 +1395,9 @@ async function extractNotesFromTab(tabId) {
         func: () => {
           const bodyText = document.body.textContent || "";
           return {
-            hasBanner: /saved\s+(responses?|notes?)\s+are\s+(view|read)/i.test(bodyText),
-            hasBreadcrumb: /Studio\s*[>›»]\s/i.test(bodyText),
-            hasConvertBtn: /convert to source/i.test(bodyText),
+            hasBanner: /saved\s+(responses?|notes?)\s+are\s+(view|read)|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i.test(bodyText),
+            hasBreadcrumb: /(Studio|工作室|工作區|スタジオ|스튜디오|Estudio|Atelier|Labor|Estúdio)\s*[>›»]\s/i.test(bodyText),
+            hasConvertBtn: /convert to source|转换为来源|轉換為來源|ソースに変換|소스로 변환|convertir en fuente|convertir en source|in quelle umwandeln|converter em fonte|converti in fonte/i.test(bodyText),
             url: window.location.href,
           };
         },
@@ -1328,10 +1438,10 @@ async function extractNotesFromTab(tabId) {
           return clone.innerHTML;
         };
         const isChrome = (text) => {
-          if (/convert to source/i.test(text) && text.length < 80) return true;
-          if (/saved\s+(responses?|notes?)\s+are/i.test(text) && text.length < 80) return true;
-          if (/^Studio\s*[>›»]/i.test(text) && text.length < 40) return true;
-          if (/^\d+\s*sources?$/i.test(text)) return true;
+          if (/convert to source|转换为来源|轉換為來源|ソースに変換|소스로 변환|convertir en fuente|convertir en source|in quelle umwandeln|converter em fonte|converti in fonte/i.test(text) && text.length < 80) return true;
+          if (/saved\s+(responses?|notes?)\s+are|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i.test(text) && text.length < 80) return true;
+          if (/^(Studio|工作室|工作區|スタジオ|스튜디오|Estudio|Atelier|Labor|Estúdio)\s*[>›»]/i.test(text) && text.length < 40) return true;
+          if (/^(\d+\s*sources?|\d+\s*个?来源|\d+\s*個?來源)$/i.test(text)) return true;
           return false;
         };
 
@@ -1349,8 +1459,8 @@ async function extractNotesFromTab(tabId) {
         while ((wNode = walker.nextNode())) {
           const t = wNode.textContent?.trim() || "";
           if (t.length > 200 || t.length < 5) continue;
-          if (/saved\s+(responses?|notes?)\s+are\s+(view|read)/i.test(t) ||
-              (t.length < 60 && /view[\-\s]*only/i.test(t) && !/chat|source/i.test(t))) {
+          if (/saved\s+(responses?|notes?)\s+are\s+(view|read)|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i.test(t) ||
+              (t.length < 60 && /view[\-\s]*only|只读|唯讀|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt/i.test(t) && !/chat|source|聊天|來源|来源/i.test(t))) {
             if (!bannerEl || t.length < bannerEl.textContent.length) {
               bannerEl = wNode;
             }
@@ -1446,7 +1556,7 @@ async function extractNotesFromTab(tabId) {
         for (const el of allEls2) {
           const t = getCleanText(el).trim();
           if (t.length > 60) continue;
-          if (/^Studio\s*[>›»]\s*(Note|Saved)/i.test(t)) {
+          if (/^(Studio|工作室|工作區|スタジオ|스튜디오|Estudio|Atelier|Labor|Estúdio)\s*[>›»]\s*(Note|Saved|笔记|筆記|已保存|已儲存|メモ|保存済み|노트|저장됨|Nota|Guardado)/i.test(t)) {
             breadcrumbEl = el;
             break;
           }
@@ -1577,9 +1687,13 @@ async function extractNotesFromTab(tabId) {
 
         // Try breadcrumb "Studio" link
         const allEls = document.querySelectorAll("a, button, [role='button'], [role='link'], span");
+        const studioLabels = [
+          "studio", "工作室", "工作區", "スタジオ", "스튜디오",
+          "estudio", "atelier", "labor", "estúdio",
+        ];
         for (const el of allEls) {
-          const text = getCleanText(el).trim();
-          if (/^Studio$/i.test(text) && (el.tagName === "A" || el.getAttribute("role") === "link")) {
+          const text = getCleanText(el).trim().toLowerCase();
+          if (studioLabels.includes(text) && (el.tagName === "A" || el.getAttribute("role") === "link")) {
             el.click();
             return "breadcrumb-studio";
           }
@@ -1589,7 +1703,12 @@ async function extractNotesFromTab(tabId) {
         for (const btn of allEls) {
           const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
           const raw = (btn.textContent || "").trim().toLowerCase();
-          if (aria.includes("back") || aria.includes("close") || raw === "arrow_back" || raw === "close") {
+          if (aria.includes("back") || aria.includes("close") || aria.includes("返回") || aria.includes("关闭") || aria.includes("關閉") ||
+              aria.includes("戻る") || aria.includes("閉じる") || aria.includes("뒤로") || aria.includes("닫기") ||
+              aria.includes("volver") || aria.includes("cerrar") || aria.includes("retour") || aria.includes("fermer") ||
+              aria.includes("zurück") || aria.includes("schließen") || aria.includes("voltar") || aria.includes("fechar") ||
+              raw === "arrow_back" || raw === "close" || raw === "返回" || raw === "关闭" || raw === "關閉" ||
+              raw === "戻る" || raw === "閉じる" || raw === "뒤로" || raw === "닫기") {
             btn.click();
             return "back-button";
           }
@@ -1792,7 +1911,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       case "n2z-inspect-upload-dialog": {
         const { tab: inspectTab } = await resolveNotebookLMTab();
-        if (!inspectTab) return { success: false, error: "No NLM tab" };
+        if (!inspectTab) return { success: false, error: "No NotebookLM tab found" };
         const r = await chrome.scripting.executeScript({
           target: { tabId: inspectTab.id },
           func: () => {
@@ -1886,7 +2005,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       default:
-        return { success: false, error: "Unknown message type" };
+        return { success: false, error: "未知消息类型" };
     }
   };
 
