@@ -90,7 +90,7 @@ async function resumeInProgressSync() {
       btn.disabled = false;
       progress.classList.add("hidden");
       progressFill.style.width = "0%";
-      await loadMappings();
+      await loadMappings(result?.mapping ? [result.mapping] : []);
     }
   }, 1500);
 }
@@ -359,17 +359,21 @@ function updateSyncButtonState() {
 
 // ─── Mappings ────────────────────────────────────────────────────────
 
-async function loadMappings() {
+async function loadMappings(fallbackMappings = []) {
   const result = await sendMessage({ type: "n2z-get-mappings" });
   const list = document.getElementById("mappings-list");
+  const mappings =
+    result.success && Array.isArray(result.data) && result.data.length > 0
+      ? result.data
+      : fallbackMappings;
 
-  if (!result.success || !result.data || result.data.length === 0) {
+  if (!mappings || mappings.length === 0) {
     list.innerHTML = '<p class="empty-state">No mappings yet.</p>';
     return;
   }
 
   list.innerHTML = "";
-  for (const mapping of result.data) {
+  for (const mapping of mappings) {
     const item = document.createElement("div");
     item.className = "mapping-item";
 
@@ -588,7 +592,7 @@ async function handleForwardSync() {
     btn.disabled = false;
     progress.classList.add("hidden");
     progressFill.style.width = "0%";
-    await loadMappings();
+    await loadMappings(result?.mapping ? [result.mapping] : []);
   }
 }
 

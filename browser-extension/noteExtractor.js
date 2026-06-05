@@ -47,6 +47,16 @@ async function extractSavedNotes() {
     '[data-panel="notes"]',
     '[aria-label*="Notes" i]',
     '[aria-label*="Saved" i]',
+    '[aria-label*="笔记" i]',
+    '[aria-label*="已保存" i]',
+    '[aria-label*="筆記" i]',
+    '[aria-label*="已儲存" i]',
+    '[aria-label*="メモ" i]',
+    '[aria-label*="ノート" i]',
+    '[aria-label*="노트" i]',
+    '[aria-label*="Notas" i]',
+    '[aria-label*="Notes" i]',
+    '[aria-label*="Notizen" i]',
     '.notes-panel',
     '.saved-notes',
   ];
@@ -62,9 +72,21 @@ async function extractSavedNotes() {
     const tabButtons = document.querySelectorAll(
       '[role="tab"], button, [role="button"]',
     );
+    const noteTabLabels = [
+      "notes", "saved notes", "my notes",
+      "笔记", "已保存的笔记", "我的笔记",
+      "筆記", "已儲存的筆記", "我的筆記",
+      "メモ", "ノート", "保存済みのメモ",
+      "노트", "저장된 노트",
+      "notas", "notas guardadas",
+      "notes enregistrées",
+      "notizen", "gespeicherte notizen",
+      "note", "note salvate",
+      "notities", "opgeslagen notities",
+    ];
     for (const btn of tabButtons) {
       const text = (btn.textContent || "").toLowerCase().trim();
-      if (text === "notes" || text === "saved notes" || text === "my notes") {
+      if (noteTabLabels.includes(text)) {
         btn.click();
         await sleep(1000);
         // Re-try finding the panel
