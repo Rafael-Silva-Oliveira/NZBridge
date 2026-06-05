@@ -22,6 +22,18 @@ const NOTEBOOKLM_URL_PREFIX = "https://notebooklm.google.com/";
 const AMBIGUOUS_TAB_ERROR =
   "Multiple NotebookLM tabs are open. Please switch to the notebook you want to sync into and try again.";
 
+// ─── File-upload tuning ──────────────────────────────────────────────
+// Files are uploaded in batches (one Add-sources dialog cycle per batch).
+// Each batch is dropped exactly ONCE; we then wait for NotebookLM to finish
+// processing it (source count grows and the spinner clears) before opening the
+// next dialog. We never re-drop a batch — re-dropping while the first upload is
+// still in flight is what caused duplicate sources.
+const FILE_BATCH_SIZE = 4;            // files per dialog open/drop/close cycle
+const SETTLE_TIMEOUT_MS = 45000;     // max wait for a batch to finish processing
+const SETTLE_POLL_MS = 500;          // poll cadence while waiting to settle
+const SETTLE_QUIET_MS = 1200;        // require the count stable + not busy this long
+const SETTLE_FALLBACK_SLEEP_MS = 4000; // used only when the panel is unreadable
+
 // ─── Zotero API helpers ──────────────────────────────────────────────
 
 // Chrome/Edge 142+ "Local Network Access" classifies the extension service
@@ -385,8 +397,8 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
   const totalItems = newItems.length;
   let doneCount = 0;
 
-  const emitProgress = (phase, currentTitle) => {
-    const state = { phase, current: doneCount, total: totalItems, currentTitle: currentTitle || "", done: false, result: null };
+  const emitProgress = (phase, currentTitle, files) => {
+    const state = { phase, current: doneCount, total: totalItems, currentTitle: currentTitle || "", files: files || null, done: false, result: null };
     syncProgress.set(tab.id, state);
     broadcastProgress({ tabId: tab.id, ...state });
   };
@@ -434,11 +446,10 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
     }
   }
 
-  // 5b. Add file sources via CDP — batch all files in groups of BATCH_SIZE.
-  // NotebookLM's file input accepts multiple files at once; we upload them
-  // in batches so the user sees incremental progress and we don't overwhelm
-  // the upload queue.
-  const FILE_BATCH_SIZE = 1;
+  // 5b. Add file sources via CDP — upload in batches of FILE_BATCH_SIZE
+  // (NotebookLM's file input accepts multiple files at once). Each batch is
+  // dropped once, then we wait for it to finish processing before the next.
+  // See FILE_BATCH_SIZE / SETTLE_* constants.
 
   if (fileItems.length > 0 && urlItems.length > 0) {
     await sleep(2000);
@@ -479,39 +490,79 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
           }
         }
 
-        // Upload in batches via base64 drop
-        const RETRY_BACKOFFS_MS = [1500, 3000, 5000];
+        // Upload in batches via base64 drop. Each batch is dropped exactly
+        // ONCE, then we wait for NotebookLM to finish ingesting it (source
+        // count grows + spinner clears, held stable briefly) before opening
+        // the next dialog. We never re-drop a batch — that was the cause of
+        // duplicate sources. Already-synced items are skipped on the next sync
+        // via syncedHashes, so a rare genuine miss is recovered then.
         for (let bi = 0; bi < resolvedFiles.length; bi += FILE_BATCH_SIZE) {
           const batch = resolvedFiles.slice(bi, bi + FILE_BATCH_SIZE);
-          const batchFileData = batch.map(f => ({
-            base64: f.fileData.base64,
-            filename: f.fileData.filename,
-            contentType: f.fileData.contentType || "application/pdf",
+          const t0 = Date.now();
+
+          const before = await getSourceState(tab.id);
+          const batchFileData = batch.map((p) => ({
+            base64: p.fileData.base64,
+            filename: p.fileData.filename,
+            contentType: p.fileData.contentType || "application/pdf",
           }));
 
-          emitProgress("files", batch[0].item.title + (batch.length > 1 ? ` (+${batch.length - 1} more)` : ""));
+          // Show every file in this batch as a bulleted list in the popup.
+          const batchTitles = batch.map((p) => p.item.title);
+          const batchLabel = batch.length > 1
+            ? `Uploading ${batch.length} files`
+            : "Uploading 1 file";
+          emitProgress("files", batchLabel, batchTitles);
 
-          let result = await injectFilesBatchViaCDP(tab.id, batchFileData);
-          let attempt = 1;
-          while (!result.success && attempt <= RETRY_BACKOFFS_MS.length) {
-            const backoff = RETRY_BACKOFFS_MS[attempt - 1];
-            console.warn(`[n2z] Upload failed for "${batch[0].item.title}" (attempt ${attempt}): ${result.error}. Retrying in ${backoff}ms…`);
-            await sleep(backoff);
-            result = await injectFilesBatchViaCDP(tab.id, batchFileData);
-            attempt++;
+          const res = await injectFilesBatchViaCDP(tab.id, batchFileData);
+
+          // Wait for the batch to FINISH processing before the next one.
+          // Primary signal: the source count reaches before+N and holds steady
+          // for SETTLE_QUIET_MS. `busy` (a visible spinner) only EXTENDS the
+          // wait while the count hasn't been reached yet — we never block on it
+          // once the count is there, so a stray/unrelated spinner can't stall
+          // us for the whole timeout. Unreadable panel → fixed fallback sleep.
+          let landed = false;
+          if (before.count == null) {
+            await sleep(SETTLE_FALLBACK_SLEEP_MS);
+            landed = res.success; // best effort: trust that the input was set
+          } else {
+            const target = before.count + batch.length;
+            const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+            let reachedSince = null;
+            while (Date.now() < deadline) {
+              const st = await getSourceState(tab.id);
+              const reached = st.count != null && st.count >= target;
+              if (reached) {
+                reachedSince = reachedSince ?? Date.now();
+                if (Date.now() - reachedSince >= SETTLE_QUIET_MS) { landed = true; break; }
+              } else {
+                reachedSince = null;
+              }
+              await sleep(SETTLE_POLL_MS);
+            }
           }
 
-          for (const { item } of batch) {
-            allResults.push({ title: item.title, success: result.success, error: result.error, type: "file" });
-            if (result.success) syncedHashes[item.itemKey] = Date.now().toString();
+          const after = await getSourceState(tab.id);
+          // Confirmed only when the full batch landed (count reached target) or
+          // the panel was unreadable and the drop reported success. We don't
+          // mark synced on a partial — better to re-sync the whole batch later
+          // (a re-sync only re-adds items NOT in syncedHashes) than to falsely
+          // skip a missing file.
+          const fullTarget = before.count != null ? before.count + batch.length : null;
+          const ok =
+            (before.count == null && landed) ||
+            (fullTarget != null && after.count != null && after.count >= fullTarget);
+          for (const p of batch) {
+            allResults.push({ title: p.item.title, success: ok, error: ok ? undefined : "Upload not confirmed", type: "file" });
+            if (ok) syncedHashes[p.item.itemKey] = Date.now().toString();
             doneCount++;
           }
 
-          // Gap between batches — gives NotebookLM's async upload queue time to drain
-          // before the next dialog open. 2000ms matches the URL→file transition delay.
-          if (bi + FILE_BATCH_SIZE < resolvedFiles.length) {
-            await sleep(2000);
-          }
+          console.log(
+            `[n2z] batch@${bi}: dropped ${batch.length}, before=${before.count}, after=${after.count}, ` +
+            `landed=${landed}, busy=${after.busy}, drop=${res.success}, method=${after.method}, ${Date.now() - t0}ms`
+          );
         }
       } finally {
         try { await chrome.debugger.detach({ tabId: tab.id }); } catch {}
@@ -642,52 +693,70 @@ async function addUrlSourcesBatch(tabId, urls) {
 
   await sleep(2000);
 
-  // Step 2: Click "Websites" in the source type picker
+  // Step 2: Click the "Website"/link option INSIDE the Add-sources dialog.
+  // Critically scoped to the dialog: NotebookLM's left panel has its own
+  // "Search the web" box with a "Web" control and a textarea — if we search
+  // page-wide we paste URLs there instead of importing them as sources.
   const step2 = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
       const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
-      const websiteLabels = [
-        "websites", "website", "web",
-        "网站", "网页", "網址", "網站", "網頁",
-        "ウェブサイト", "ウェブ",
-        "웹사이트", "웹",
-        "sitios web", "sitio web",
-        "site web", "sites web",
-        "webseite", "webseiten",
-        "sites", "site",
-        "siti web", "sito web",
-        "websites", "webpagina",
-        "situs web",
-      ];
+      const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+      if (!dialog) return { success: false, error: "Add-sources dialog not open" };
 
-      // Look broadly for any clickable element with "Website" text
-      const allClickable = document.querySelectorAll('button, [role="button"], [role="menuitem"], [role="option"], [tabindex="0"], a, div, span');
-      for (const el of allClickable) {
+      // The dialog has TWO text areas: a "Search the web" box (always visible)
+      // and the URL-paste box that only appears after clicking "Website". Only
+      // treat the dialog as ready if a PASTE/LINK/URL field is present — never
+      // the search box (else we'd type URLs into web-search).
+      const pasteHints = ["paste", "link", "url", "粘贴", "貼上", "链接", "連結", "网址", "網址", "リンク", "링크", "enlace", "lien", "tautan"];
+      const searchHints = ["search", "搜索", "搜尋", "検索", "검색", "buscar", "rechercher", "suche", "pesquisar", "cerca", "zoek", "cari"];
+      const fieldLooksLikePaste = (f) => {
+        const ph = ((f.getAttribute("placeholder") || "") + " " + (f.getAttribute("aria-label") || "")).toLowerCase();
+        if (searchHints.some((h) => ph.includes(h))) return false;
+        return pasteHints.some((h) => ph.includes(h));
+      };
+      const hasPasteField = [...dialog.querySelectorAll("textarea, input[type='text'], input[type='url']")]
+        .some((f) => { const s = window.getComputedStyle(f); return s.display !== "none" && s.visibility !== "hidden" && fieldLooksLikePaste(f); });
+      if (hasPasteField) return { success: true, clicked: "(url paste field already present)", method: "already-open" };
+
+      const websiteLabels = [
+        "website", "websites", "link", "links", "url", "urls",
+        "网站", "网页", "链接", "網址", "網站", "網頁", "連結",
+        "ウェブサイト", "リンク",
+        "웹사이트", "링크",
+        "sitio web", "sitios web", "enlace",
+        "site web", "sites web", "lien",
+        "webseite", "webseiten",
+        "site", "sites",
+        "sito web", "siti web",
+        "website", "webpagina",
+        "situs web", "tautan",
+      ];
+      // Only consider clickables INSIDE the dialog.
+      const clickables = dialog.querySelectorAll('button, [role="button"], [role="menuitem"], [role="option"], [tabindex="0"], a, mat-chip, [class*="chip"]');
+      for (const el of clickables) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).toLowerCase();
-        // Must contain "website" and be a reasonably small element (not a huge container)
-        if (websiteLabels.includes(clean) && el.textContent.length < 100) {
+        if (websiteLabels.includes(clean) && (el.textContent || "").length < 100) {
           el.click();
           return { success: true, clicked: clean, tag: el.tagName };
         }
       }
-      // Fallback: look for elements whose raw text starts with icon names for website
-      for (const el of allClickable) {
+      // Fallback: contains a website/link label.
+      for (const el of clickables) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const raw = (el.textContent || "").trim().toLowerCase();
         if (raw.length < 100 && websiteLabels.some((label) => raw.includes(label))) {
           el.click();
-          return { success: true, clicked: raw.substring(0, 50), tag: el.tagName, method: "contains-website" };
+          return { success: true, clicked: raw.substring(0, 50), tag: el.tagName, method: "contains" };
         }
       }
-      const visible = Array.from(allClickable)
+      const visible = Array.from(clickables)
         .filter(e => { const s = window.getComputedStyle(e); return s.display !== "none" && s.visibility !== "hidden"; })
-        .map(e => { const c = getCleanText(e); const r = e.textContent?.trim()||""; return c.length < 50 ? (c === r ? c : c + " [" + r.substring(0,30) + "]") : ""; })
-        .filter(t => t && t.length > 0).slice(0, 15);
-      return { success: false, error: "No Websites option found. Visible: " + visible.join(", ") };
+        .map(e => getCleanText(e)).filter(t => t && t.length < 40).slice(0, 15);
+      return { success: false, error: "No Website option in dialog. Visible: " + visible.join(", ") };
     },
   });
   steps.step2 = step2?.[0]?.result;
@@ -716,43 +785,46 @@ async function addUrlSourcesBatch(tabId, urls) {
         "plakken", "link",
         "tempel", "tautan",
       ];
-      // Priority 1: find textarea with "paste" in placeholder (the URL paste area)
+      // Scope to the Add-sources dialog so we never type into the left-side
+      // "Search the web" box (which has its own textarea).
+      const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+      if (!dialog) return { success: false, error: "Add-sources dialog not open (URL field step)" };
+
+      const searchHints = ["search", "搜索", "搜尋", "検索", "검색", "buscar", "rechercher", "suche", "pesquisar", "cerca", "zoek", "cari"];
+      const fieldMeta = (f) => ((f.getAttribute("placeholder") || "") + " " + (f.getAttribute("aria-label") || "")).toLowerCase();
+      const isSearchField = (f) => searchHints.some((h) => fieldMeta(f).includes(h));
+      const isVisible = (f) => { const s = window.getComputedStyle(f); return s.display !== "none" && s.visibility !== "hidden"; };
+
+      // Priority 1: field whose placeholder/aria looks like paste/link/url
+      // (and NOT search), inside the dialog.
       let field = null;
-      const textareas = document.querySelectorAll("textarea");
-      for (const ta of textareas) {
-        const style = window.getComputedStyle(ta);
-        if (style.display === "none" || style.visibility === "hidden") continue;
-        const ph = (ta.getAttribute("placeholder") || "").toLowerCase();
-        if (urlFieldLabels.some((label) => ph.includes(label))) {
+      const allFieldsList = [...dialog.querySelectorAll("textarea, input[type='text'], input[type='url']")];
+      for (const f of allFieldsList) {
+        if (!isVisible(f) || isSearchField(f)) continue;
+        if (urlFieldLabels.some((label) => fieldMeta(f).includes(label))) { field = f; break; }
+      }
+      // Priority 2: any visible textarea that is NOT the search box.
+      if (!field) {
+        for (const ta of dialog.querySelectorAll("textarea")) {
+          if (!isVisible(ta) || isSearchField(ta)) continue;
           field = ta;
           break;
         }
       }
-      // Priority 2: any visible textarea
+      // Priority 3: any visible text/url input that is NOT the search box.
       if (!field) {
-        for (const ta of textareas) {
-          const style = window.getComputedStyle(ta);
-          if (style.display === "none" || style.visibility === "hidden") continue;
-          field = ta;
-          break;
-        }
-      }
-      // Priority 3: visible text input
-      if (!field) {
-        const inputs = document.querySelectorAll('input[type="text"], input[type="url"]');
-        for (const inp of inputs) {
-          const style = window.getComputedStyle(inp);
-          if (style.display === "none" || style.visibility === "hidden") continue;
+        for (const inp of dialog.querySelectorAll('input[type="text"], input[type="url"]')) {
+          if (!isVisible(inp) || isSearchField(inp)) continue;
           field = inp;
           break;
         }
       }
 
       if (!field) {
-        const allFields = Array.from(document.querySelectorAll("input, textarea"))
+        const allFields = Array.from(dialog.querySelectorAll("input, textarea"))
           .map(i => `${i.tagName}:${i.type||""}:ph="${i.placeholder||""}"`)
           .slice(0, 8);
-        return { success: false, error: "No URL field found. Fields: " + allFields.join(", ") };
+        return { success: false, error: "No URL field in dialog. Fields: " + allFields.join(", ") };
       }
 
       // Focus and set value
@@ -787,13 +859,20 @@ async function addUrlSourcesBatch(tabId, urls) {
 
   await sleep(1500);
 
-  // Step 4: Click the "Insert" button
-  // The button is clearly visible in the dialog with text "Insert"
+  // Step 4: Submit the URLs. NotebookLM's submit control may be a text button
+  // ("Insert"/"Add") OR an icon-only round arrow button (→) next to the URL
+  // field. We try text labels first, then arrow/send icons, then the enabled
+  // button positioned nearest-right of the URL textarea.
   const step4 = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
       const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
       const hasAny = (text, labels) => labels.some((label) => text.includes(label));
+      const isVisible = (el) => { const s = window.getComputedStyle(el); return s.display !== "none" && s.visibility !== "hidden"; };
+      const isDisabled = (el) =>
+        el.disabled === true ||
+        el.getAttribute("disabled") !== null ||
+        el.getAttribute("aria-disabled") === "true";
       const insertLabels = [
         "insert", "submit", "add source", "add sources",
         "插入", "提交", "添加来源", "新增來源",
@@ -807,53 +886,104 @@ async function addUrlSourcesBatch(tabId, urls) {
         "invoegen", "toevoegen",
         "masukkan", "tambahkan",
       ];
+      // Material icon ligatures used for "submit/continue" arrows.
+      const iconNames = ["arrow_forward", "arrow_upward", "arrow_right_alt", "send", "subdirectory_arrow_left", "keyboard_return", "north", "east"];
+      const iconText = (el) => {
+        const mi = el.querySelector("mat-icon, .material-icons, .material-icons-extended, .google-symbols, [class*='material-symbols']");
+        return (mi?.textContent || "").trim().toLowerCase();
+      };
 
-      // Search ALL elements, not just buttons — NotebookLM may use divs or spans
-      const allClickable = document.querySelectorAll("button, [role='button'], [tabindex='0'], a");
+      // Scope to the Add-sources dialog so we don't click the left panel's
+      // web-search arrow button.
+      const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+      if (!dialog) return { success: false, error: "Add-sources dialog not open (submit step)" };
+      const allClickable = [...dialog.querySelectorAll("button, [role='button'], [tabindex='0'], a")].filter(isVisible);
 
-      // First pass: exact match for "Insert"
+      // Pass 1: exact text match (e.g. "Insert").
       for (const el of allClickable) {
-        const style = window.getComputedStyle(el);
-        if (style.display === "none" || style.visibility === "hidden") continue;
+        if (isDisabled(el)) continue;
         const clean = getCleanText(el).trim().toLowerCase();
-        if (insertLabels.includes(clean)) {
-          el.click();
-          return { success: true, clicked: clean };
-        }
+        if (insertLabels.includes(clean)) { el.click(); return { success: true, clicked: clean, method: "text-exact" }; }
       }
-
-      // Second pass: contains "insert" (case-insensitive)
+      // Pass 2: text/aria contains an insert label.
       for (const el of allClickable) {
-        const style = window.getComputedStyle(el);
-        if (style.display === "none" || style.visibility === "hidden") continue;
-        const clean = getCleanText(el).trim().toLowerCase();
-        if (hasAny(clean, insertLabels) && clean.length < 30) {
-          el.click();
-          return { success: true, clicked: clean };
-        }
-      }
-
-      // Third pass: any submit-like button
-      for (const el of allClickable) {
-        const style = window.getComputedStyle(el);
-        if (style.display === "none" || style.visibility === "hidden") continue;
+        if (isDisabled(el)) continue;
         const clean = getCleanText(el).trim().toLowerCase();
         const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-        if (hasAny(clean, insertLabels) || hasAny(aria, insertLabels)) {
-          el.click();
-          return { success: true, clicked: clean || aria };
+        if ((hasAny(clean, insertLabels) && clean.length < 30) || hasAny(aria, insertLabels)) {
+          el.click(); return { success: true, clicked: clean || aria, method: "text-contains" };
         }
       }
+      // Pass 3: arrow/send icon, or aria-label referencing such an icon.
+      for (const el of allClickable) {
+        if (isDisabled(el)) continue;
+        const icon = iconText(el);
+        const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+        if (iconNames.includes(icon) || iconNames.some((n) => aria.includes(n.replace(/_/g, " ")))) {
+          el.click(); return { success: true, clicked: icon || aria || "(icon)", method: "icon" };
+        }
+      }
+      // Pass 4: proximity — the enabled icon-only button nearest to the RIGHT
+      // of (and vertically aligned with) the URL paste field. Skip the
+      // "Search the web" box so we don't click its arrow.
+      const searchHints4 = ["search", "搜索", "搜尋", "検索", "검색", "buscar", "rechercher", "suche", "pesquisar", "cerca", "zoek", "cari"];
+      const isSearchField4 = (f) => {
+        const m = ((f.getAttribute("placeholder") || "") + " " + (f.getAttribute("aria-label") || "")).toLowerCase();
+        return searchHints4.some((h) => m.includes(h));
+      };
+      let field = null;
+      for (const ta of dialog.querySelectorAll("textarea, input[type='text'], input[type='url']")) {
+        if (isVisible(ta) && !isSearchField4(ta)) { field = ta; break; }
+      }
+      if (field) {
+        const fr = field.getBoundingClientRect();
+        let best = null, bestDist = Infinity;
+        for (const el of allClickable) {
+          if (isDisabled(el)) continue;
+          const txt = getCleanText(el).trim();
+          if (txt.length > 3) continue; // submit affordance here is icon-only
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) continue;
+          const verticallyNear = r.top < fr.bottom + 40 && r.bottom > fr.top - 40;
+          const toRight = r.left >= fr.left; // same row, at/after the field
+          if (!verticallyNear || !toRight) continue;
+          const dist = Math.hypot(r.left - fr.right, (r.top + r.height / 2) - (fr.top + fr.height / 2));
+          if (dist < bestDist) { bestDist = dist; best = el; }
+        }
+        if (best) { best.click(); return { success: true, clicked: "(nearest-to-field)", method: "proximity" }; }
+      }
 
-      // Debug: list all visible clickable elements
-      const visible = Array.from(allClickable)
-        .filter(e => { const s = window.getComputedStyle(e); return s.display !== "none" && s.visibility !== "hidden"; })
-        .map(e => { const c = getCleanText(e).trim(); return c.length > 0 && c.length < 50 ? `${e.tagName}:"${c}"` : ""; })
-        .filter(t => t.length > 0).slice(0, 15);
-      return { success: false, error: "No Insert button found. Elements: " + visible.join(", ") };
+      // Debug: list visible clickable elements with their icon, if any.
+      const visible = allClickable
+        .map((e) => { const c = getCleanText(e).trim(); const ic = iconText(e); const lbl = c || (ic ? `[icon:${ic}]` : "") || (e.getAttribute("aria-label") || ""); return lbl && lbl.length < 50 ? `${e.tagName}:"${lbl}"${isDisabled(e) ? "(disabled)" : ""}` : ""; })
+        .filter((t) => t.length > 0).slice(0, 20);
+      return { success: false, error: "No submit/Insert control found. Elements: " + visible.join(", ") };
     },
   });
   steps.step4 = step4?.[0]?.result;
+  if (!steps.step4?.success) return { ...steps.step4, steps };
+
+  // Verify the submit actually took: on success NotebookLM clears the URL
+  // field / closes the dialog. If the URLs are still sitting in the field
+  // after the wait, the submit did not register — report failure so the user
+  // isn't told it worked when the URLs stayed in the box.
+  const submitted = await waitForInTab(
+    tabId,
+    () => {
+      const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+      if (!dialog) return true; // dialog closed → submitted
+      const fields = [...dialog.querySelectorAll("textarea, input[type='text'], input[type='url']")]
+        .filter((f) => { const s = window.getComputedStyle(f); return s.display !== "none" && s.visibility !== "hidden"; });
+      if (fields.length === 0) return true; // field gone → submitted
+      // Submitted only if every visible field is now empty.
+      return fields.every((f) => !f.value || f.value.trim().length === 0);
+    },
+    { timeoutMs: 8000, intervalMs: 300 }
+  );
+
+  if (!submitted) {
+    return { success: false, error: "URLs were entered but the submit button did not register (they stayed in the box).", steps };
+  }
 
   // Wait for NotebookLM to process
   await sleep(3000);
@@ -880,8 +1010,10 @@ async function addUrlSourcesBatch(tabId, urls) {
  * - Page.fileChooserOpened never fires because "Upload files" is a nav button, not a picker
  * - Drop events with a real DataTransfer populated from base64 bytes work reliably
  *
- * Each file is uploaded one at a time (one open/drop/close cycle per file) so
- * NotebookLM can process each upload sequentially without queue overflow.
+ * All files in `filesData` are dropped in a single open/drop/close cycle (one
+ * DataTransfer with every file). This function only performs the drop and
+ * returns whether the file input was set; the CALLER waits for NotebookLM to
+ * finish ingesting the batch (and never re-drops it).
  */
 async function injectFilesBatchViaCDP(tabId, filesData) {
   if (!filesData?.length) {
@@ -1053,27 +1185,25 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
       return { success: false, error: `Trusted click on "${btnCoords.text}" did not open file chooser` };
     }
 
-    // Step 5: Set files using the first file only (one per open/close cycle)
-    // We only use filePath here — but since setFileInputFiles may fail on Windows
-    // paths, we write a temp file via a blob URL workaround instead.
-    // Actually: use backendNodeId from the chooser event — this is the real input.
-    // We still need to write file bytes somewhere CDP can read them.
-    // Solution: write base64 data into the page as a blob, get a local blob URL,
-    // then use Runtime to set the input's files via a FileList trick.
-    const f = filesData[0];
+    // Step 5: Set ALL files in this batch via a single DataTransfer. NotebookLM's
+    // file input accepts multiple files at once, so one open/drop/close cycle
+    // ingests the whole batch. Bytes are built from base64 in-page (avoids the
+    // Windows native-path issues of DOM.setFileInputFiles).
+    const filesPayload = JSON.stringify(
+      filesData.map((f) => ({ base64: f.base64, filename: f.filename, type: f.contentType || "application/pdf" }))
+    );
     const setResult = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
       expression: `
         (async () => {
           try {
-            const base64 = ${JSON.stringify(f.base64)};
-            const filename = ${JSON.stringify(f.filename)};
-            const type = ${JSON.stringify(f.contentType || "application/pdf")};
-            const bin = atob(base64);
-            const bytes = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            const file = new File([bytes], filename, { type });
+            const files = ${filesPayload};
             const dt = new DataTransfer();
-            dt.items.add(file);
+            for (const f of files) {
+              const bin = atob(f.base64);
+              const bytes = new Uint8Array(bin.length);
+              for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+              dt.items.add(new File([bytes], f.filename, { type: f.type }));
+            }
             // Find the file input that was just opened
             const inp = document.querySelector('input[type="file"]');
             if (!inp) return { ok: false, reason: 'no-input' };
@@ -1093,8 +1223,11 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
       return { success: false, error: `Could not set files on input: ${setInfo?.reason}` };
     }
 
-    // Step 6: Close dialog and wait
-    await sleep(1500);
+    // Step 6: Close the dialog, then wait for it to actually disappear.
+    // A short settle lets the input's change handler start the upload before
+    // we Escape, so a fast close can't cancel an in-flight upload. The caller
+    // then waits for the batch to finish ingesting.
+    await sleep(300);
     await chrome.scripting.executeScript({
       target: { tabId },
       func: () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })),
@@ -1111,7 +1244,7 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
       { timeoutMs: 10000, intervalMs: 200 }
     );
 
-    return { success: true, method: "trusted-click+defineProperty", count: 1 };
+    return { success: true, count: filesData.length };
   } catch (e) {
     return { success: false, error: `File inject: ${e.message}` };
   } finally {
@@ -1855,6 +1988,92 @@ async function backwardSyncImpl(tab, collectionId, customTags) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Reads NotebookLM's Sources panel state in the tab:
+ *   { count: number|null, busy: boolean, method }
+ *
+ * - `count`: number of sources currently shown (from a "N sources" label, or
+ *   a row count). null when unreadable.
+ * - `busy`: true while NotebookLM is still processing an upload (a spinner /
+ *   progress indicator is visible). Used to wait for a batch to FINISH before
+ *   starting the next one — so we never re-drop files that are still loading.
+ *
+ * The Add-sources dialog subtree is excluded so its own controls don't count.
+ */
+async function getSourceState(tabId) {
+  try {
+    const r = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const getCleanText = (node) => {
+          let t = "";
+          for (const c of node.childNodes) {
+            if (c.nodeType === 3) t += c.textContent;
+            else if (c.nodeType === 1) {
+              const tag = c.tagName?.toLowerCase() || "";
+              const cls = (c.className || "").toString().toLowerCase();
+              if (tag === "mat-icon" || cls.includes("material-icons") || cls.includes("mat-icon")) continue;
+              t += getCleanText(c);
+            }
+          }
+          return t.trim();
+        };
+        const inDialog = (el) => !!el.closest('[role="dialog"], mat-dialog-container');
+
+        // Count strategy 1: explicit "N sources" text (virtualization-proof).
+        let countFromText = null;
+        const countRe = /(\d+)\s*(sources?|来源|來源|ソース|소스|출처|fuentes?|quellen?|fontes?|fonti|bronnen|sumber)/i;
+        for (const el of document.querySelectorAll('span, div, p, h1, h2, h3, button, [role="button"], [aria-label]')) {
+          if (inDialog(el)) continue;
+          const text = getCleanText(el);
+          if (text.length > 60) continue;
+          const m = text.match(countRe) || (el.getAttribute("aria-label") || "").match(countRe);
+          if (m) {
+            const n = parseInt(m[1], 10);
+            if (!isNaN(n)) countFromText = countFromText == null ? n : Math.max(countFromText, n);
+          }
+        }
+
+        // Count strategy 2: source rows.
+        const rowSelectors = [
+          '[role="list"] [role="listitem"]',
+          'mat-list-item',
+          '[class*="source"][class*="item"]',
+          '[class*="source-list"] > *',
+          '[aria-label*="source" i] input[type="checkbox"]',
+        ];
+        let bestRowCount = 0;
+        for (const sel of rowSelectors) {
+          const n = [...document.querySelectorAll(sel)].filter((el) => !inDialog(el)).length;
+          if (n > bestRowCount) bestRowCount = n;
+        }
+
+        let count = null, method = null;
+        if (countFromText != null) { count = countFromText; method = "text"; }
+        else if (bestRowCount > 0) { count = bestRowCount; method = "rows"; }
+
+        // Busy: any processing spinner / progress indicator OUTSIDE the dialog.
+        const busyEls = document.querySelectorAll(
+          'mat-spinner, mat-progress-spinner, mat-progress-bar, [role="progressbar"], .mdc-circular-progress, [class*="spinner"], [class*="loading"], [aria-busy="true"]'
+        );
+        let busy = false;
+        for (const el of busyEls) {
+          if (inDialog(el)) continue;
+          const s = window.getComputedStyle(el);
+          if (s.display === "none" || s.visibility === "hidden") continue;
+          busy = true;
+          break;
+        }
+
+        return { count, method, busy };
+      },
+    });
+    return r?.[0]?.result || { count: null, method: null, busy: false };
+  } catch {
+    return { count: null, method: null, busy: false };
+  }
 }
 
 /**

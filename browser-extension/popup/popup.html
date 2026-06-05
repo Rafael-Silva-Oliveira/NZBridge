@@ -84,6 +84,7 @@
         <span class="progress-text" id="progress-text">Starting…</span>
         <span class="progress-count" id="progress-count"></span>
       </div>
+      <ul class="progress-files hidden" id="progress-files"></ul>
     </div>
     <div class="btn-group">
       <button id="btn-sync" class="btn primary" disabled>
@@ -165,6 +166,7 @@
       <ul class="update-list">
         <li>Fix: connection to Zotero now works on Chrome/Edge 142+ — if the browser blocks it, the popup shows how to enable "Local network access"</li>
         <li>Fix: requests no longer hang for minutes when the local connection is blocked; they fail fast with clear guidance</li>
+        <li>Faster PDF uploads — files upload in batches and each is verified in NotebookLM before continuing, so syncs are quicker while still ensuring every file lands</li>
       </ul>
     </div>
 
