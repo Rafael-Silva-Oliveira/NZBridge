@@ -1,0 +1,102 @@
+# CI Workflow
+#
+# Runs on every pull request and on pushes to main. Catches the kind of
+# breakage that has no other guard rail today (syntax errors, type errors,
+# malformed manifests) before code lands.
+#
+# Two independent jobs:
+#   zotero-plugin     — npm ci, build (includes `tsc --noEmit`), lint (non-blocking)
+#   browser-extension — `node --check` on every script + JSON validity
+#
+# The Zotero integration test (`zotero-plugin test`) is intentionally NOT run
+# here: it launches a real Zotero instance, which a headless GitHub runner
+# cannot provide. Lint is reported but does not fail the build yet — the repo
+# has a pre-existing lint backlog to clear first.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel an in-progress run when a newer commit is pushed to the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zotero-plugin:
+    name: Zotero plugin (build + typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: zotero-plugin/package-lock.json
+
+      - name: Install dependencies
+        working-directory: zotero-plugin
+        run: npm ci
+
+      # `build` runs `zotero-plugin build && tsc --noEmit`, so this is the
+      # blocking gate: a packing failure or a type error fails the job.
+      - name: Build and typecheck
+        working-directory: zotero-plugin
+        run: npm run build
+
+      # Reported for visibility but non-blocking until the existing
+      # prettier/eslint backlog on main is cleared.
+      - name: Lint (non-blocking)
+        working-directory: zotero-plugin
+        continue-on-error: true
+        run: npm run lint:check
+
+  browser-extension:
+    name: Browser extension (syntax + manifest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The extension is plain JS with no build step, so the meaningful guard
+      # is that every script parses and the JSON files are well-formed.
+      - name: Syntax-check all extension scripts
+        working-directory: browser-extension
+        run: |
+          status=0
+          while IFS= read -r -d '' file; do
+            echo "node --check $file"
+            node --check "$file" || status=1
+          done < <(find . -name '*.js' -not -path './node_modules/*' -print0)
+          exit $status
+
+      - name: Validate JSON files
+        working-directory: browser-extension
+        run: |
+          status=0
+          while IFS= read -r -d '' file; do
+            echo "validating $file"
+            node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$file" \
+              || { echo "::error file=$file::Invalid JSON"; status=1; }
+          done < <(find . -name '*.json' -not -path './node_modules/*' -print0)
+          exit $status
+
+      - name: Check manifest version matches plugin version
+        run: |
+          MANIFEST_VERSION=$(node -p "require('./browser-extension/manifest.json').version")
+          PLUGIN_VERSION=$(node -p "require('./zotero-plugin/package.json').version")
+          echo "browser-extension/manifest.json: ${MANIFEST_VERSION}"
+          echo "zotero-plugin/package.json:      ${PLUGIN_VERSION}"
+          if [ "$MANIFEST_VERSION" != "$PLUGIN_VERSION" ]; then
+            echo "::error::Version mismatch — manifest (${MANIFEST_VERSION}) != plugin (${PLUGIN_VERSION}). The release workflow requires these to match."
+            exit 1
+          fi
+          echo "Versions match: ${MANIFEST_VERSION}"
