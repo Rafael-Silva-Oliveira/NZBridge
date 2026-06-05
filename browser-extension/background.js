@@ -24,13 +24,32 @@ const AMBIGUOUS_TAB_ERROR =
 
 // ─── Zotero API helpers ──────────────────────────────────────────────
 
-async function zoteroRequest(path, body = null) {
+// Chrome/Edge 142+ "Local Network Access" classifies the extension service
+// worker as a "public" origin and blocks requests to loopback targets
+// (localhost:23119) unless the user grants the "Local network access"
+// permission. A service worker cannot trigger that prompt itself, so the
+// fetch fails/hangs. We surface this guidance whenever a connection can't be
+// established so the user (or IT) knows the exact toggle to flip.
+const LNA_HINT =
+  'If Zotero is running, Chrome/Edge may be blocking the local connection. ' +
+  'Open chrome://extensions → NZBridge → Details → Site settings, and set ' +
+  '"Local network access" to Allow, then try again. (Edge: edge://extensions)';
+
+// Default timeout for normal API calls. Short so connection/collection checks
+// fail fast instead of hanging until the popup's message timeout.
+const ZOTERO_TIMEOUT_MS = 8000;
+// File transfers (/n2z/file) return base64 PDFs and can be large; give them
+// a much longer budget.
+const ZOTERO_FILE_TIMEOUT_MS = 60000;
+
+async function zoteroRequest(path, body = null, { timeoutMs = ZOTERO_TIMEOUT_MS } = {}) {
   const options = {
     method: body ? "POST" : "GET",
     headers: {
       "Content-Type": "application/json",
       "Zotero-Allowed-Request": "true",
     },
+    signal: AbortSignal.timeout(timeoutMs),
   };
   if (body) {
     options.body = JSON.stringify(body);
@@ -38,10 +57,18 @@ async function zoteroRequest(path, body = null) {
   let res;
   try {
     res = await fetch(`${ZOTERO_BASE}${path}`, options);
-  } catch {
-    throw new Error(
-      "Zotero is not running or the n2z plugin is not loaded. Make sure Zotero is open."
+  } catch (e) {
+    // AbortSignal.timeout() throws TimeoutError; a network/LNA block throws
+    // TypeError ("Failed to fetch"). Both mean "couldn't reach Zotero" — tag
+    // with a code so callers can render the right guidance.
+    const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";
+    const err = new Error(
+      (timedOut
+        ? "Connection to Zotero timed out. "
+        : "Could not reach Zotero on localhost:23119. ") + LNA_HINT
     );
+    err.code = timedOut ? "timeout" : "blocked-or-down";
+    throw err;
   }
   if (!res.ok) {
     throw new Error(`Zotero returned HTTP ${res.status}`);
@@ -58,9 +85,9 @@ async function zoteroRequest(path, body = null) {
 async function checkZoteroConnection() {
   try {
     const res = await zoteroRequest("/n2z/status");
-    return res.success === true;
-  } catch {
-    return false;
+    return { connected: res.success === true, reason: "ok" };
+  } catch (e) {
+    return { connected: false, reason: e?.code || "blocked-or-down" };
   }
 }
 
@@ -77,7 +104,7 @@ async function getExportableItems(collectionId) {
 }
 
 async function getFile(attachmentId) {
-  return zoteroRequest("/n2z/file", { attachmentId });
+  return zoteroRequest("/n2z/file", { attachmentId }, { timeoutMs: ZOTERO_FILE_TIMEOUT_MS });
 }
 
 async function getMappings() {
@@ -434,7 +461,16 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
         // Fetch file data (base64) from Zotero for each file
         const resolvedFiles = [];
         for (const item of fileItems) {
-          const fileRes = await getFile(item.attachmentId);
+          let fileRes;
+          try {
+            fileRes = await getFile(item.attachmentId);
+          } catch (e) {
+            // Connection/LNA failure or timeout — e.message carries the
+            // chrome://extensions guidance. Record per-item and keep going.
+            allResults.push({ title: item.title, success: false, error: e.message, type: "file" });
+            doneCount++;
+            continue;
+          }
           if (!fileRes.success || !fileRes.data) {
             allResults.push({ title: item.title, success: false, error: "Could not fetch file from Zotero", type: "file" });
             doneCount++;
@@ -1860,7 +1896,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handler = async () => {
     switch (message.type) {
       case "n2z-check-connection":
-        return { connected: await checkZoteroConnection() };
+        // Returns { connected, reason } — reason in {ok, timeout, blocked-or-down}
+        return await checkZoteroConnection();
 
       case "n2z-get-libraries":
         return getLibraries();

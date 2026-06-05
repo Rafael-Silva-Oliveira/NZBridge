@@ -51,6 +51,15 @@ header h1 {
   background: #fef2f2;
   color: #991b1b;
   border-bottom: 1px solid #fecaca;
+  line-height: 1.45;
+}
+
+.banner.error code {
+  background: #fee2e2;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  word-break: break-all;
 }
 
 .prereq-banner {

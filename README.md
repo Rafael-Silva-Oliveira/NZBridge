@@ -55,6 +55,8 @@ Before installing NZBridge, make sure you have:
 - **Google Chrome or Microsoft Edge** (version 116+) — Manifest V3 support is required
 - **A Google account** with access to [NotebookLM](https://notebooklm.google.com/)
 
+> On **Chrome/Edge 142+**, you must allow the extension to reach Zotero on `localhost`: `chrome://extensions` → NZBridge → **Details** → **Site settings** → **Local network access** → **Allow**. See [Troubleshooting](#chromeedge-142-blocks-the-zotero-connection-local-network-access) if collections won't load or syncs time out.
+
 Note that it only works if your NotebookLM language settings is set to **english**.
 ## Installation
 
@@ -221,11 +223,33 @@ No build step required — load `browser-extension/` directly as an unpacked ext
 
 | Problem | Solution |
 |---------|----------|
-| Red dot (disconnected) in popup | Make sure Zotero is running with NZBridge installed |
-| "Cannot connect to Zotero" error | Check that no firewall is blocking `localhost:23119` |
+| Red dot (disconnected) in popup | Make sure Zotero is running with NZBridge installed. On Chrome/Edge 142+, also see **"Local Network Access"** below |
+| "Cannot connect to Zotero" error | Check that no firewall is blocking `localhost:23119`. On Chrome/Edge 142+, see **"Local Network Access"** below |
+| Collections won't load / sync times out | Almost always the **"Local Network Access"** block below (Chrome/Edge 142+) |
 | PDFs not uploading | Ensure the NotebookLM tab is active and the notebook is open |
 | No notes found during import | Open the Studio panel in NotebookLM and make sure you have saved notes (not just chat responses) |
 | Sources exceed 50 limit | Split your Zotero collection into smaller sub-collections |
+
+### Chrome/Edge 142+ blocks the Zotero connection (Local Network Access)
+
+Starting with **Chrome/Edge 142** (released late 2025), a security feature called **Local Network Access (LNA)** blocks extensions from reaching `localhost` (where the Zotero plugin runs) until you grant permission. NZBridge can't request this permission automatically, so you may see the red disconnected dot, empty collection lists, or syncs that fail/time out — even though Zotero is running. **This affects all operating systems, not just macOS.**
+
+**Fix (per user):**
+
+1. Open `chrome://extensions` (Edge: `edge://extensions`)
+2. Find **NZBridge** and click **Details**
+3. Scroll to **Site settings** and set **Local network access** to **Allow**
+4. Reopen the NZBridge popup — the dot should turn green
+
+**For IT / managed deployments:**
+
+Administrators can allow-list the extension without prompting each user via the Chrome/Edge enterprise policy [`LocalNetworkAccessAllowedForUrls`](https://chromeenterprise.google/policies/#LocalNetworkAccessAllowedForUrls), adding the extension origin:
+
+```text
+chrome-extension://<EXTENSION_ID>/*
+```
+
+(Find `<EXTENSION_ID>` on the `chrome://extensions` Details page.) As a temporary stopgap, the `LocalNetworkAccessRestrictionsTemporaryOptOut` policy disables LNA entirely, but it is deprecated and scheduled for removal after Chrome 152 — prefer the allow-list.
 
 ## License
 

@@ -126,8 +126,26 @@ async function checkConnection() {
     banner.classList.add("hidden");
   } else {
     dot.className = "dot disconnected";
+    banner.innerHTML = connectionErrorHtml(result.reason);
     banner.classList.remove("hidden");
   }
+}
+
+// Builds the connection-error banner for the popup. On Chrome/Edge 142+,
+// "Local network access" blocks the service worker from reaching Zotero on
+// localhost; that needs different guidance than "Zotero isn't running".
+function connectionErrorHtml(reason) {
+  if (reason === "blocked-or-down" || reason === "timeout") {
+    return (
+      "<strong>Can't reach Zotero on localhost.</strong> Make sure Zotero is " +
+      "running. On Chrome/Edge 142+ you may also need to allow the local " +
+      "connection: open <code>chrome://extensions</code> → <strong>NZBridge</strong> " +
+      "→ <strong>Details</strong> → <strong>Site settings</strong>, set " +
+      "<strong>Local network access</strong> to <strong>Allow</strong>, then " +
+      "reopen this popup. (Edge: <code>edge://extensions</code>)"
+    );
+  }
+  return "Cannot connect to Zotero. Is it running with NZBridge installed?";
 }
 
 // ─── Library + Collection loading ───────────────────────────────────
