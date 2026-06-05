@@ -66,12 +66,13 @@ async function resumeInProgressSync() {
       progressCount.textContent = "";
     }
     if (data.phase === "files" && data.currentTitle) {
-      progressText.textContent = truncate(data.currentTitle, 34);
+      progressText.textContent = data.currentTitle;
     } else if (data.phase === "urls") {
       progressText.textContent = data.currentTitle || "Adding URLs…";
     } else {
       progressText.textContent = "Syncing…";
     }
+    renderProgressFiles(data);
   };
 
   updateUI(status.data);
@@ -126,8 +127,26 @@ async function checkConnection() {
     banner.classList.add("hidden");
   } else {
     dot.className = "dot disconnected";
+    banner.innerHTML = connectionErrorHtml(result.reason);
     banner.classList.remove("hidden");
   }
+}
+
+// Builds the connection-error banner for the popup. On Chrome/Edge 142+,
+// "Local network access" blocks the service worker from reaching Zotero on
+// localhost; that needs different guidance than "Zotero isn't running".
+function connectionErrorHtml(reason) {
+  if (reason === "blocked-or-down" || reason === "timeout") {
+    return (
+      "<strong>Can't reach Zotero on localhost.</strong> Make sure Zotero is " +
+      "running. On Chrome/Edge 142+ you may also need to allow the local " +
+      "connection: open <code>chrome://extensions</code> → <strong>NZBridge</strong> " +
+      "→ <strong>Details</strong> → <strong>Site settings</strong>, set " +
+      "<strong>Local network access</strong> to <strong>Allow</strong>, then " +
+      "reopen this popup. (Edge: <code>edge://extensions</code>)"
+    );
+  }
+  return "Cannot connect to Zotero. Is it running with NZBridge installed?";
 }
 
 // ─── Library + Collection loading ───────────────────────────────────
@@ -564,11 +583,11 @@ async function handleForwardSync() {
     if (data.phase === "urls") {
       progressText.textContent = data.currentTitle || "Adding URLs…";
     } else if (data.phase === "files") {
-      const name = data.currentTitle ? truncate(data.currentTitle, 34) : "Uploading file…";
-      progressText.textContent = name;
+      progressText.textContent = data.currentTitle || "Uploading files…";
     } else {
       progressText.textContent = "Syncing…";
     }
+    renderProgressFiles(data);
   }
 
   async function finishSync(result) {
@@ -592,12 +611,35 @@ async function handleForwardSync() {
     btn.disabled = false;
     progress.classList.add("hidden");
     progressFill.style.width = "0%";
+    const pf = document.getElementById("progress-files");
+    if (pf) { pf.classList.add("hidden"); pf.innerHTML = ""; }
     await loadMappings(result?.mapping ? [result.mapping] : []);
   }
 }
 
 function truncate(str, max) {
   return str.length <= max ? str : str.slice(0, max - 1) + "…";
+}
+
+// Renders the per-batch file list as bullets under the progress bar.
+// Shows the list only when the current phase provides file names.
+function renderProgressFiles(data) {
+  const ul = document.getElementById("progress-files");
+  if (!ul) return;
+  const files = data.phase === "files" && Array.isArray(data.files) ? data.files : null;
+  if (!files || files.length === 0) {
+    ul.classList.add("hidden");
+    ul.innerHTML = "";
+    return;
+  }
+  ul.innerHTML = "";
+  for (const name of files) {
+    const li = document.createElement("li");
+    li.textContent = name;
+    li.title = name; // full name on hover (rows are ellipsized)
+    ul.appendChild(li);
+  }
+  ul.classList.remove("hidden");
 }
 
 async function handleExtractNotes() {

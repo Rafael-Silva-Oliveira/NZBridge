@@ -51,6 +51,15 @@ header h1 {
   background: #fef2f2;
   color: #991b1b;
   border-bottom: 1px solid #fecaca;
+  line-height: 1.45;
+}
+
+.banner.error code {
+  background: #fee2e2;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  word-break: break-all;
 }
 
 .prereq-banner {
@@ -274,17 +283,24 @@ header h1 {
 .progress-footer {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .progress-text {
   font-size: 12px;
   color: #666;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   flex: 1;
   min-width: 0;
+  /* Wrap the file list across up to 4 lines instead of truncating to one. */
+  white-space: normal;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .progress-count {
@@ -293,6 +309,32 @@ header h1 {
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
   margin-left: 8px;
+}
+
+.progress-files {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.progress-files li {
+  position: relative;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #555;
+  padding: 1px 0 1px 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress-files li::before {
+  content: "•";
+  position: absolute;
+  left: 2px;
+  color: #2563eb;
 }
 
 /* Results */
