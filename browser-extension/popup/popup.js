@@ -6,6 +6,7 @@ document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
   await setupTheme();
+  setupPin();
   setupTabs();
   await checkConnection();
   await loadLibraries();
@@ -13,6 +14,7 @@ async function init() {
   await loadNotebookInfo();
   await loadMappings();
   setupEventListeners();
+  await restoreSyncSelection();
   await initPrereqBanners();
   await resumeInProgressSync();
   await loadCachedNotes();
@@ -59,6 +61,11 @@ async function resumeInProgressSync() {
   btn.disabled = true;
   progress.classList.remove("hidden");
 
+  // Re-enable Cancel and point it at the resumed sync's tab.
+  window._n2zSyncTabId = tabId;
+  const resumeCancelBtn = document.getElementById("btn-cancel-sync");
+  if (resumeCancelBtn) { resumeCancelBtn.disabled = false; resumeCancelBtn.textContent = "Cancel upload"; }
+
   const updateUI = (data) => {
     if (data.total > 0) {
       progressFill.classList.remove("indeterminate");
@@ -89,11 +96,13 @@ async function resumeInProgressSync() {
       const result = s.data.result;
       const resultDiv = document.getElementById("sync-result");
       resultDiv.classList.remove("hidden");
-      resultDiv.className = result?.success ? "result success" : "result error";
+      resultDiv.className = result?.cancelled ? "result" : (result?.success ? "result success" : "result error");
       resultDiv.textContent = result?.message || result?.error || "Sync finished";
       btn.disabled = false;
       progress.classList.add("hidden");
       progressFill.style.width = "0%";
+      if (resumeCancelBtn) { resumeCancelBtn.disabled = true; resumeCancelBtn.textContent = "Cancel upload"; }
+      window._n2zSyncTabId = null;
       await loadMappings(result?.mapping ? [result.mapping] : []);
     }
   }, 1500);
@@ -125,6 +134,45 @@ function applyTheme(theme) {
     btn.textContent = dark ? "☀️" : "🌙";
     btn.title = dark ? "Switch to light mode" : "Switch to dark mode";
   }
+}
+
+// ─── Pinned (floating) window ────────────────────────────────────────
+
+// Browser popups can't be moved or kept open, so the pin button reopens
+// this same page in a small standalone window (`?pinned=1`) that the user
+// can drag around and keep open while working in NotebookLM.
+function setupPin() {
+  const isPinned = new URLSearchParams(location.search).has("pinned");
+  const btn = document.getElementById("pin-toggle");
+
+  if (isPinned) {
+    document.body.classList.add("pinned");
+    btn?.remove(); // already a floating window
+    return;
+  }
+
+  btn?.addEventListener("click", async () => {
+    // Focus the existing floating window instead of opening a second one
+    const { pinnedWindowId } = await chrome.storage.local.get("pinnedWindowId");
+    if (pinnedWindowId) {
+      try {
+        await chrome.windows.update(pinnedWindowId, { focused: true });
+        window.close();
+        return;
+      } catch {
+        // window was closed; fall through and create a new one
+      }
+    }
+
+    const win = await chrome.windows.create({
+      url: chrome.runtime.getURL("popup/popup.html?pinned=1"),
+      type: "popup",
+      width: 396,
+      height: 680,
+    });
+    await chrome.storage.local.set({ pinnedWindowId: win.id });
+    window.close();
+  });
 }
 
 // ─── Searchable collection dropdowns ─────────────────────────────────
@@ -324,6 +372,72 @@ async function loadLibraries() {
   }
 }
 
+// Persist the chosen sync (To NotebookLM) library + collection so reopening
+// the popup restores it.
+async function saveSyncSelection() {
+  const libraryId    = document.getElementById("library-select").value || "";
+  const collectionId = document.getElementById("collection-select").value || "";
+  await chrome.storage.local.set({ lastSyncSelection: { libraryId, collectionId } });
+}
+
+// Persist the import (To Zotero) target separately. We record that the user
+// explicitly picked it so we stop auto-mirroring the sync selection into it.
+async function saveImportSelection() {
+  const libraryId    = document.getElementById("import-library-select").value || "";
+  const collectionId = document.getElementById("import-collection-select").value || "";
+  await chrome.storage.local.set({ lastImportSelection: { libraryId, collectionId, userSet: true } });
+}
+
+// Applies a (libraryId, collectionId) to a library/collection select pair and
+// refreshes its searchable-input. Returns true if the collection was applied.
+function applySelection(libSelId, colSelId, libraryId, collectionId) {
+  const libSel = document.getElementById(libSelId);
+  const colSel = document.getElementById(colSelId);
+  if (libraryId && [...libSel.options].some((o) => o.value === String(libraryId))) {
+    libSel.value = String(libraryId);
+    populateCollectionsForLibrary(libSel, colSel);
+  }
+  let applied = false;
+  if (collectionId && [...colSel.options].some((o) => o.value === String(collectionId))) {
+    colSel.value = String(collectionId);
+    applied = true;
+  }
+  const wrap = document.querySelector(`.searchable-select[data-for="${colSelId}"]`);
+  if (wrap && wrap._refresh) wrap._refresh();
+  return applied;
+}
+
+// Restore the previously chosen sync library + collection (if still present),
+// render its item preview, and seed the import (To Zotero) tab with the same
+// collection as a placeholder — unless the user has set their own import
+// target, which is restored instead.
+async function restoreSyncSelection() {
+  const { lastSyncSelection, lastImportSelection } =
+    await chrome.storage.local.get(["lastSyncSelection", "lastImportSelection"]);
+
+  const sync = lastSyncSelection || {};
+  if (sync.libraryId || sync.collectionId) {
+    const applied = applySelection(
+      "library-select", "collection-select", sync.libraryId, sync.collectionId
+    );
+    if (applied) await previewItems(sync.collectionId);
+  }
+
+  // Import target: the user's own choice wins; otherwise mirror the sync
+  // collection as a convenient default (they can still change it).
+  if (lastImportSelection && lastImportSelection.userSet) {
+    applySelection(
+      "import-library-select", "import-collection-select",
+      lastImportSelection.libraryId, lastImportSelection.collectionId
+    );
+  } else if (sync.libraryId || sync.collectionId) {
+    applySelection(
+      "import-library-select", "import-collection-select",
+      sync.libraryId, sync.collectionId
+    );
+  }
+}
+
 function populateCollectionsForLibrary(libSelect, colSelect) {
   const libraryId = parseInt(libSelect.value);
   const lib = window._libraryTree.find((l) => l.libraryId === libraryId);
@@ -357,10 +471,12 @@ async function loadNotebookInfo() {
 
   if (result.success && result.data) {
     info.textContent = `Connected: ${result.data.notebookId || "Notebook detected"}`;
-    info.style.color = "#166534";
+    info.classList.add("ok");
+    info.classList.remove("err");
   } else {
     info.textContent = result.error || "No NotebookLM tab open";
-    info.style.color = "#991b1b";
+    info.classList.add("err");
+    info.classList.remove("ok");
   }
 }
 
@@ -375,6 +491,7 @@ async function previewItems(collectionId) {
   const itemList = document.getElementById("item-list");
   const syncBtn = document.getElementById("btn-sync");
   const resetBtn = document.getElementById("btn-reset-sync");
+  const checkBtn = document.getElementById("btn-check-notebook");
 
   window._previewItems = [];
 
@@ -383,6 +500,7 @@ async function previewItems(collectionId) {
     itemList.classList.add("hidden");
     syncBtn.disabled = true;
     resetBtn.disabled = true;
+    if (checkBtn) checkBtn.disabled = true;
     return;
   }
 
@@ -414,11 +532,19 @@ async function previewItems(collectionId) {
     return;
   }
 
+  // Items already uploaded to the connected notebook (keyed by Zotero item
+  // key, so renaming a source inside NotebookLM doesn't affect this)
+  const syncedKeys = await getSyncedKeys(collectionId);
+  const uploadedCount = items.filter((i) => syncedKeys.has(i.itemKey)).length;
+
   // Summary line
   const parts = [];
   if (fileItems.length) parts.push(`${fileItems.length} PDF${fileItems.length > 1 ? "s" : ""}`);
   if (urlItems.length)  parts.push(`${urlItems.length} URL${urlItems.length > 1 ? "s" : ""}`);
   let summaryHtml = `<strong>${totalCount} item${totalCount > 1 ? "s" : ""}</strong>: ${parts.join(", ")}`;
+  if (uploadedCount > 0) {
+    summaryHtml += `<br/><span class="uploaded-summary">&#10003; ${uploadedCount} already in this notebook</span>`;
+  }
   if (totalCount > 50) {
     summaryHtml += `<br/><span class="warn">&#9888; ${totalCount} items — NotebookLM free tier supports max 50 sources</span>`;
   }
@@ -436,20 +562,20 @@ async function previewItems(collectionId) {
   urlsContainer.innerHTML  = "";
 
   if (fileItems.length) {
-    fileCountEl.textContent = `(${fileItems.length})`;
+    fileCountEl.textContent = groupCountLabel(fileItems, syncedKeys);
     groupFiles.classList.remove("hidden");
     for (const item of fileItems) {
-      filesContainer.appendChild(makeItemRow(item));
+      filesContainer.appendChild(makeItemRow(item, syncedKeys.has(item.itemKey)));
     }
   } else {
     groupFiles.classList.add("hidden");
   }
 
   if (urlItems.length) {
-    urlCountEl.textContent = `(${urlItems.length})`;
+    urlCountEl.textContent = groupCountLabel(urlItems, syncedKeys);
     groupUrls.classList.remove("hidden");
     for (const item of urlItems) {
-      urlsContainer.appendChild(makeItemRow(item));
+      urlsContainer.appendChild(makeItemRow(item, syncedKeys.has(item.itemKey)));
     }
   } else {
     groupUrls.classList.add("hidden");
@@ -458,8 +584,16 @@ async function previewItems(collectionId) {
   itemList.classList.remove("hidden");
   syncBtn.disabled = false;
   resetBtn.disabled = false;
+  // "Check notebook" is useful only when something is marked uploaded.
+  if (checkBtn) checkBtn.disabled = uploadedCount === 0;
 
-  // Group select-all checkboxes
+  // Group select-all checkboxes (disabled when every item is already uploaded).
+  // Reset to unchecked on each render so a re-render (e.g. after a sync) doesn't
+  // leave them ticked from a previous selection.
+  document.getElementById("select-all-files").checked = false;
+  document.getElementById("select-all-urls").checked  = false;
+  document.getElementById("select-all-files").disabled = !filesContainer.querySelector('input[type="checkbox"]');
+  document.getElementById("select-all-urls").disabled  = !urlsContainer.querySelector('input[type="checkbox"]');
   document.getElementById("select-all-files").onchange = (e) => {
     filesContainer.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = e.target.checked);
     updateSyncButtonState();
@@ -476,18 +610,61 @@ async function previewItems(collectionId) {
   updateSyncButtonState();
 }
 
-function makeItemRow(item) {
+// Fetches the set of item keys already uploaded to the currently connected
+// notebook. The background reconciles against NotebookLM's live sources first,
+// so markers for sources the user removed are pruned (making them
+// re-uploadable). Empty set when no notebook is open or nothing was synced.
+async function getSyncedKeys(collectionId) {
+  try {
+    const tabRes = await sendMessage({ type: "n2z-get-notebooklm-tab" }, 3000);
+    const notebookId = tabRes?.success ? tabRes.data?.notebookId : null;
+
+    // Durable source of truth: the Zotero mapping's per-item record. This is
+    // the SAME data the Mappings tab shows, lives in Zotero (survives reopen),
+    // and is never altered by reading NotebookLM's DOM. Removed-source
+    // detection is a separate, explicit action (the "Check notebook" button).
+    const res = await sendMessage({
+      type: "n2z-get-synced-items",
+      collectionId: parseInt(collectionId),
+      notebookId,
+    }, 5000);
+    if (res?.success && Array.isArray(res.data)) {
+      console.log(`[n2z] Uploaded-item markers (from Zotero mapping): ${res.data.length} key(s)`);
+      return new Set(res.data);
+    }
+    return new Set();
+  } catch (e) {
+    console.warn("[n2z] Could not load uploaded-item markers:", e);
+    return new Set();
+  }
+}
+
+function groupCountLabel(items, syncedKeys) {
+  const uploaded = items.filter((i) => syncedKeys.has(i.itemKey)).length;
+  return uploaded > 0 ? `(${items.length - uploaded} new · ${uploaded} uploaded)` : `(${items.length})`;
+}
+
+function makeItemRow(item, isUploaded = false) {
   const row = document.createElement("label");
-  row.className = "item-row";
-  const cb = document.createElement("input");
-  cb.type = "checkbox";
-  cb.checked = true;
-  cb.dataset.itemKey = item.itemKey;
+  row.className = isUploaded ? "item-row uploaded" : "item-row";
+  if (isUploaded) {
+    // Already in the notebook: green check instead of a checkbox, not selectable
+    const check = document.createElement("span");
+    check.className = "item-check";
+    check.textContent = "✓";
+    row.title = "Already uploaded to this notebook";
+    row.appendChild(check);
+  } else {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = false; // unchecked by default — user picks what to sync
+    cb.dataset.itemKey = item.itemKey;
+    row.appendChild(cb);
+  }
   const name = document.createElement("span");
   name.className = "item-row-name";
   name.textContent = item.title || item.url || item.itemKey;
   name.title = item.title || item.url || "";
-  row.appendChild(cb);
   row.appendChild(name);
   return row;
 }
@@ -565,20 +742,73 @@ function setupEventListeners() {
   syncLibSel.addEventListener("change", () => {
     populateCollectionsForLibrary(syncLibSel, syncColSel);
     previewItems(""); // reset preview when library changes
+    saveSyncSelection();
   });
 
   importLibSel.addEventListener("change", () => {
     populateCollectionsForLibrary(importLibSel, importColSel);
+    saveImportSelection();
+  });
+
+  importColSel.addEventListener("change", () => {
+    saveImportSelection();
   });
 
   const syncSelect = document.getElementById("collection-select");
   syncSelect.addEventListener("change", () => {
     previewItems(syncSelect.value);
+    saveSyncSelection();
   });
 
   document
     .getElementById("btn-sync")
     .addEventListener("click", handleForwardSync);
+
+  document
+    .getElementById("btn-cancel-sync")
+    .addEventListener("click", async () => {
+      const cancelBtn = document.getElementById("btn-cancel-sync");
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = "Cancelling…";
+      // tabId is optional; the background cancels the sole active sync if omitted.
+      await sendMessage({ type: "n2z-cancel-sync", tabId: window._n2zSyncTabId ?? undefined }, 5000);
+    });
+
+  document
+    .getElementById("btn-check-notebook")
+    .addEventListener("click", async () => {
+      const select = document.getElementById("collection-select");
+      if (!select.value) return;
+      const btn = document.getElementById("btn-check-notebook");
+      const resultDiv = document.getElementById("sync-result");
+      const tabRes = await sendMessage({ type: "n2z-get-notebooklm-tab" }, 3000);
+      const notebookId = tabRes?.success ? tabRes.data?.notebookId : null;
+      if (!notebookId) {
+        resultDiv.classList.remove("hidden");
+        resultDiv.className = "result error";
+        resultDiv.textContent = "Open the notebook first, then click Check notebook.";
+        return;
+      }
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Checking…";
+      const before = (await getSyncedKeys(select.value)).size;
+      const rec = await sendMessage({
+        type: "n2z-reconcile-synced",
+        collectionId: parseInt(select.value),
+        notebookId,
+      }, 15000);
+      btn.textContent = orig;
+      btn.disabled = false;
+      await previewItems(select.value);
+      const after = rec?.success && Array.isArray(rec.data) ? rec.data.length : before;
+      const removed = Math.max(0, before - after);
+      resultDiv.classList.remove("hidden");
+      resultDiv.className = "result success";
+      resultDiv.textContent = removed > 0
+        ? `Cleared ${removed} source${removed > 1 ? "s" : ""} you removed in NotebookLM — ready to re-upload.`
+        : "All synced sources are still in the notebook.";
+    });
 
   document
     .getElementById("btn-reset-sync")
@@ -590,6 +820,8 @@ function setupEventListeners() {
       resultDiv.classList.remove("hidden");
       resultDiv.className = "result success";
       resultDiv.textContent = "Sync state cleared. You can sync again.";
+      // Uploaded markers are derived from the cleared state — re-render
+      await previewItems(select.value);
     });
 
   document
@@ -631,7 +863,11 @@ async function handleForwardSync() {
   progressFill.style.width = "0%";
   progressFill.classList.add("indeterminate");
 
+  const cancelBtn = document.getElementById("btn-cancel-sync");
+  if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.textContent = "Cancel upload"; }
+
   let syncTabId = null;
+  window._n2zSyncTabId = null;
 
   // Listen for real-time progress broadcasts from the background
   const onProgress = (message) => {
@@ -671,6 +907,7 @@ async function handleForwardSync() {
     }
 
     syncTabId = startResult.tabId;
+    window._n2zSyncTabId = syncTabId; // let the Cancel button target this sync
 
     // Fallback: if the popup misses the broadcast (e.g. was briefly closed),
     // poll every 1.5s to keep the UI up to date.
@@ -725,8 +962,15 @@ async function handleForwardSync() {
     progressFill.classList.remove("indeterminate");
     progressFill.style.width = "100%";
 
+    const cancelBtn = document.getElementById("btn-cancel-sync");
+    if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.textContent = "Cancel upload"; }
+    window._n2zSyncTabId = null;
+
     resultDiv.classList.remove("hidden");
-    if (result && result.success) {
+    if (result && result.cancelled) {
+      resultDiv.className = "result";          // neutral, not an error
+      resultDiv.textContent = result.message;  // "Sync cancelled — N of M uploaded…"
+    } else if (result && result.success) {
       resultDiv.className = "result success";
       resultDiv.textContent = result.message;
     } else {
@@ -741,6 +985,13 @@ async function handleForwardSync() {
     const pf = document.getElementById("progress-files");
     if (pf) { pf.classList.add("hidden"); pf.innerHTML = ""; }
     await loadMappings(result?.mapping ? [result.mapping] : []);
+    // Re-render so freshly uploaded items show the green check (read from the
+    // now-updated Zotero mapping). Also do this on cancel — partial uploads
+    // were recorded and should show their checks.
+    if (result && (result.success || result.cancelled)) {
+      const colSel = document.getElementById("collection-select");
+      if (colSel.value) await previewItems(colSel.value);
+    }
   }
 }
 
