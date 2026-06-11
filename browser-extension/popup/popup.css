@@ -27,6 +27,27 @@ header h1 {
   color: #111;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.theme-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px;
+  border-radius: 4px;
+  opacity: 0.8;
+}
+.theme-toggle:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.15);
+}
+
 .dot {
   width: 10px;
   height: 10px;
@@ -201,6 +222,63 @@ header h1 {
   font-size: 12px;
   color: #666;
   padding: 4px 0;
+}
+
+/* Searchable collection dropdown */
+.searchable-hidden {
+  display: none !important;
+}
+.searchable-select {
+  position: relative;
+}
+.searchable-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 13px;
+  background: #fff;
+  color: #1a1a1a;
+}
+.searchable-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+.searchable-list {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 50;
+}
+.searchable-option {
+  padding: 6px 8px;
+  font-size: 12.5px;
+  color: #1a1a1a;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.searchable-option:hover {
+  background: #eff6ff;
+}
+.searchable-option.selected {
+  background: #dbeafe;
+  font-weight: 600;
+}
+.searchable-empty {
+  padding: 8px;
+  font-size: 12px;
+  color: #999;
+  text-align: center;
 }
 
 /* Buttons */
@@ -519,6 +597,13 @@ header h1 {
   padding: 20px 0;
 }
 
+.cache-hint {
+  color: #777;
+  font-size: 11px;
+  font-style: italic;
+  padding: 2px 0 6px;
+}
+
 /* Item list (selective sync) */
 .item-list {
   margin-top: 6px;
@@ -651,9 +736,20 @@ header h1 {
 /* Support footer */
 .support-footer {
   display: flex;
-  justify-content: center;
-  padding: 8px 16px 12px;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 12px;
   border-top: 1px solid #e5e5e5;
+}
+
+.support-cta {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #888;
+  text-align: center;
+  margin: 0;
+  max-width: 320px;
 }
 
 .bmc-link {
@@ -663,4 +759,183 @@ header h1 {
 
 .bmc-link:hover {
   opacity: 0.85;
+}
+
+/* ─── Dark theme ─────────────────────────────────────────────────────
+   Applied via `body.dark`. Default is dark (set on load in popup.js).
+   Remaps the light surfaces to a dark palette; accent blue is kept. */
+body.dark {
+  color: #e5e7eb;
+  background: #1e1f22;
+}
+body.dark header {
+  border-bottom-color: #34363b;
+}
+body.dark header h1 {
+  color: #f3f4f6;
+}
+body.dark .tabs {
+  border-bottom-color: #34363b;
+}
+body.dark .tab {
+  color: #9ca3af;
+}
+body.dark .tab:hover {
+  color: #f3f4f6;
+  background: #2a2c30;
+}
+body.dark .tab.active {
+  color: #60a5fa;
+  border-bottom-color: #60a5fa;
+}
+body.dark .tab-description,
+body.dark .info-text,
+body.dark .empty-state,
+body.dark .cache-hint {
+  color: #9ca3af;
+}
+body.dark .field label {
+  color: #cbd5e1;
+}
+body.dark .field select,
+body.dark .field input[type="text"] {
+  background: #2a2c30;
+  border-color: #45474d;
+  color: #e5e7eb;
+}
+body.dark .field select:focus,
+body.dark .field input:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.25);
+}
+body.dark .field select option {
+  background: #2a2c30;
+  color: #e5e7eb;
+}
+body.dark .searchable-input {
+  background: #2a2c30;
+  border-color: #45474d;
+  color: #e5e7eb;
+}
+body.dark .searchable-input:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.25);
+}
+body.dark .searchable-list {
+  background: #25272b;
+  border-color: #45474d;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+body.dark .searchable-option {
+  color: #e5e7eb;
+}
+body.dark .searchable-option:hover {
+  background: #34363b;
+}
+body.dark .searchable-option.selected {
+  background: #1e3a8a;
+}
+body.dark .searchable-empty {
+  color: #9ca3af;
+}
+body.dark .btn.secondary {
+  background: #2a2c30;
+  border-color: #45474d;
+  color: #e5e7eb;
+}
+body.dark .btn.secondary:hover:not(:disabled) {
+  background: #34363b;
+}
+body.dark .note-item,
+body.dark .item-row,
+body.dark .mapping-item {
+  border-color: #34363b;
+}
+
+/* Collection item preview (PDFs / URLs list on the To NotebookLM tab) */
+body.dark .item-preview,
+body.dark .item-list,
+body.dark .item-group,
+body.dark .item-group-header {
+  background: #2a2c30;
+  border-color: #45474d;
+}
+body.dark .item-group {
+  background: transparent;
+}
+body.dark .item-group-label {
+  color: #e5e7eb;
+}
+body.dark .item-group-count,
+body.dark .mapping-notebook,
+body.dark .mapping-sync {
+  color: #9ca3af;
+}
+body.dark .item-row {
+  border-bottom-color: #34363b;
+}
+body.dark .item-row:hover {
+  background: #34363b;
+}
+body.dark #item-summary,
+body.dark .item-preview .info-text {
+  color: #cbd5e1;
+}
+body.dark .mapping-collection,
+body.dark .mapping-library {
+  color: #f3f4f6;
+}
+body.dark .note-item-title {
+  color: #f3f4f6;
+}
+body.dark .note-item-preview,
+body.dark .item-row-name {
+  color: #cbd5e1;
+}
+body.dark .item-row:hover {
+  background: #2a2c30;
+}
+body.dark .notes-header label,
+body.dark .select-all-label {
+  color: #cbd5e1;
+}
+body.dark .update-version {
+  color: #f3f4f6;
+}
+body.dark .update-list li {
+  color: #d1d5db;
+}
+body.dark .update-list li::before {
+  color: #6b7280;
+}
+body.dark .update-tag.current {
+  background: #1e3a8a;
+  color: #bfdbfe;
+}
+body.dark .update-tag.planned {
+  background: #4a3208;
+  color: #fcd9a8;
+}
+body.dark .support-footer {
+  border-top-color: #34363b;
+}
+body.dark .support-cta {
+  color: #9ca3af;
+}
+body.dark .result.success {
+  background: #052e1a;
+  color: #86efac;
+}
+body.dark .result.error {
+  background: #3f1212;
+  color: #fca5a5;
+}
+body.dark .prereq-banner {
+  background: #2a2410;
+  color: #fcd9a8;
+  border-color: #5c4a1a;
+}
+body.dark .prereq-label,
+body.dark .prereq-toggle {
+  color: #f0b35e;
 }

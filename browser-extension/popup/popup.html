@@ -9,7 +9,10 @@
 <body>
   <header>
     <h1>NZBridge</h1>
-    <span id="status-dot" class="dot disconnected"></span>
+    <div class="header-right">
+      <button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
+      <span id="status-dot" class="dot disconnected"></span>
+    </div>
   </header>
 
   <!-- Connection error -->
@@ -47,7 +50,11 @@
     </div>
     <div class="field">
       <label for="collection-select">Zotero Collection</label>
-      <select id="collection-select">
+      <div class="searchable-select" data-for="collection-select">
+        <input type="text" class="searchable-input" placeholder="Select a collection..." autocomplete="off" />
+        <div class="searchable-list hidden"></div>
+      </div>
+      <select id="collection-select" class="searchable-hidden">
         <option value="">Select a collection...</option>
       </select>
     </div>
@@ -120,7 +127,11 @@
     </div>
     <div class="field">
       <label for="import-collection-select">Target Zotero Collection</label>
-      <select id="import-collection-select">
+      <div class="searchable-select" data-for="import-collection-select">
+        <input type="text" class="searchable-input" placeholder="Select a collection..." autocomplete="off" />
+        <div class="searchable-list hidden"></div>
+      </div>
+      <select id="import-collection-select" class="searchable-hidden">
         <option value="">Select a collection...</option>
       </select>
     </div>
@@ -136,6 +147,7 @@
           Select all
         </label>
       </div>
+      <div id="notes-cache-hint" class="cache-hint hidden"></div>
       <div id="notes-container"></div>
     </div>
     <div class="btn-group">
@@ -162,7 +174,20 @@
     <p class="tab-description">Latest releases and upcoming features.</p>
 
     <div class="update-section">
-      <h3 class="update-version">v0.3.2 <span class="update-tag current">Current</span></h3>
+      <h3 class="update-version">v0.3.3 <span class="update-tag current">Current</span></h3>
+      <ul class="update-list">
+        <li>Fix: "Find Text Notes" reliably finds saved text notes again after NotebookLM's Studio redesign. Notes are detected by structure, not timestamps, and never confused with Studio generators (Slide Deck, Mind Map, etc.)</li>
+        <li>Fix: each note now extracts its own content correctly (no more duplicated text) in both the expanded and collapsed layouts, including read-only saved responses</li>
+        <li>Inline citations become readable markers like (20,21); years and other numbers are left untouched</li>
+        <li>Fix: importing URLs after PDFs now works. The "Websites" option in the Add sources dialog is found reliably</li>
+        <li>Found notes are remembered per notebook. Close and reopen the popup without losing them, then re-run to refresh</li>
+        <li>Searchable collection pickers: start typing to filter your Zotero collections</li>
+        <li>Dark mode (default) with a toggle in the top-right, plus faster note extraction</li>
+      </ul>
+    </div>
+
+    <div class="update-section">
+      <h3 class="update-version">v0.3.2</h3>
       <ul class="update-list">
         <li>Fix: connection to Zotero now works on Chrome/Edge 142+ — if the browser blocks it, the popup shows how to enable "Local network access"</li>
         <li>Fix: requests no longer hang for minutes when the local connection is blocked; they fail fast with clear guidance</li>
@@ -256,6 +281,7 @@
 
   <!-- Support -->
   <footer class="support-footer">
+    <p class="support-cta">The continued development of NZBridge depends on your support. If it saves you time, please consider leaving a review or buying me a coffee. It truly helps! 😊</p>
     <a href="https://buymeacoffee.com/rafaeloliveira" target="_blank" class="bmc-link">
       <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="28" />
     </a>

@@ -187,6 +187,11 @@ function extractNotebookIdFromUrl(url) {
   return match ? match[1] : null;
 }
 
+// chrome.storage.local key for cached extracted notes of a notebook.
+function notesCacheKey(notebookId) {
+  return `extractedNotes_${notebookId}`;
+}
+
 // ─── Forward Sync ────────────────────────────────────────────────────
 
 /**
@@ -650,6 +655,29 @@ async function addUrlSourcesBatch(tabId, urls) {
 
   const steps = {};
 
+  // Step 0: Close any dialog left open by a previous phase (e.g. the PDF
+  // upload), so Step 1 opens a fresh Add-sources chooser rather than acting on
+  // a stale one. Ignores the hidden 0×0 emoji-keyboard dialog.
+  const staleOpen = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const dlgs = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+      return dlgs.some((d) => {
+        const s = window.getComputedStyle(d);
+        if (s.display === "none" || s.visibility === "hidden") return false;
+        const r = d.getBoundingClientRect();
+        return r.width > 50 && r.height > 50;
+      });
+    },
+  });
+  if (staleOpen?.[0]?.result) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })),
+    });
+    await sleep(600);
+  }
+
   // Step 1: Click "Add sources" button
   const step1 = await chrome.scripting.executeScript({
     target: { tabId },
@@ -701,7 +729,23 @@ async function addUrlSourcesBatch(tabId, urls) {
     target: { tabId },
     func: () => {
       const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
-      const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+      // Pick the real, VISIBLE Add-sources dialog. NotebookLM may keep a stray
+      // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
+      // not grab the first match — choose the largest visible one.
+      const dialog = (() => {
+        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const visible = all.filter((d) => {
+          const s = window.getComputedStyle(d);
+          if (s.display === "none" || s.visibility === "hidden") return false;
+          const r = d.getBoundingClientRect();
+          return r.width > 50 && r.height > 50;
+        });
+        visible.sort((a, b) => {
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          return rb.width * rb.height - ra.width * ra.height;
+        });
+        return visible[0] || null;
+      })();
       if (!dialog) return { success: false, error: "Add-sources dialog not open" };
 
       // The dialog has TWO text areas: a "Search the web" box (always visible)
@@ -787,7 +831,23 @@ async function addUrlSourcesBatch(tabId, urls) {
       ];
       // Scope to the Add-sources dialog so we never type into the left-side
       // "Search the web" box (which has its own textarea).
-      const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+      // Pick the real, VISIBLE Add-sources dialog. NotebookLM may keep a stray
+      // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
+      // not grab the first match — choose the largest visible one.
+      const dialog = (() => {
+        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const visible = all.filter((d) => {
+          const s = window.getComputedStyle(d);
+          if (s.display === "none" || s.visibility === "hidden") return false;
+          const r = d.getBoundingClientRect();
+          return r.width > 50 && r.height > 50;
+        });
+        visible.sort((a, b) => {
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          return rb.width * rb.height - ra.width * ra.height;
+        });
+        return visible[0] || null;
+      })();
       if (!dialog) return { success: false, error: "Add-sources dialog not open (URL field step)" };
 
       const searchHints = ["search", "搜索", "搜尋", "検索", "검색", "buscar", "rechercher", "suche", "pesquisar", "cerca", "zoek", "cari"];
@@ -895,7 +955,23 @@ async function addUrlSourcesBatch(tabId, urls) {
 
       // Scope to the Add-sources dialog so we don't click the left panel's
       // web-search arrow button.
-      const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+      // Pick the real, VISIBLE Add-sources dialog. NotebookLM may keep a stray
+      // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
+      // not grab the first match — choose the largest visible one.
+      const dialog = (() => {
+        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const visible = all.filter((d) => {
+          const s = window.getComputedStyle(d);
+          if (s.display === "none" || s.visibility === "hidden") return false;
+          const r = d.getBoundingClientRect();
+          return r.width > 50 && r.height > 50;
+        });
+        visible.sort((a, b) => {
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          return rb.width * rb.height - ra.width * ra.height;
+        });
+        return visible[0] || null;
+      })();
       if (!dialog) return { success: false, error: "Add-sources dialog not open (submit step)" };
       const allClickable = [...dialog.querySelectorAll("button, [role='button'], [tabindex='0'], a")].filter(isVisible);
 
@@ -970,7 +1046,23 @@ async function addUrlSourcesBatch(tabId, urls) {
   const submitted = await waitForInTab(
     tabId,
     () => {
-      const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+      // Pick the real, VISIBLE Add-sources dialog. NotebookLM may keep a stray
+      // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
+      // not grab the first match — choose the largest visible one.
+      const dialog = (() => {
+        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const visible = all.filter((d) => {
+          const s = window.getComputedStyle(d);
+          if (s.display === "none" || s.visibility === "hidden") return false;
+          const r = d.getBoundingClientRect();
+          return r.width > 50 && r.height > 50;
+        });
+        visible.sort((a, b) => {
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          return rb.width * rb.height - ra.width * ra.height;
+        });
+        return visible[0] || null;
+      })();
       if (!dialog) return true; // dialog closed → submitted
       const fields = [...dialog.querySelectorAll("textarea, input[type='text'], input[type='url']")]
         .filter((f) => { const s = window.getComputedStyle(f); return s.display !== "none" && s.visibility !== "hidden"; });
@@ -1027,7 +1119,23 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
   const stalePresent = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+      // Pick the real, VISIBLE Add-sources dialog. NotebookLM may keep a stray
+      // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
+      // not grab the first match — choose the largest visible one.
+      const dialog = (() => {
+        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const visible = all.filter((d) => {
+          const s = window.getComputedStyle(d);
+          if (s.display === "none" || s.visibility === "hidden") return false;
+          const r = d.getBoundingClientRect();
+          return r.width > 50 && r.height > 50;
+        });
+        visible.sort((a, b) => {
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          return rb.width * rb.height - ra.width * ra.height;
+        });
+        return visible[0] || null;
+      })();
       return !!dialog;
     },
   });
@@ -1038,7 +1146,17 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     });
     await waitForInTab(
       tabId,
-      () => !document.querySelector('[role="dialog"], mat-dialog-container'),
+      () => {
+        // Consider only visible dialogs — a stray 0×0 emoji-keyboard dialog
+        // may linger in the DOM and would otherwise never "close".
+        const dlgs = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        return !dlgs.some((d) => {
+          const s = window.getComputedStyle(d);
+          if (s.display === "none" || s.visibility === "hidden") return false;
+          const r = d.getBoundingClientRect();
+          return r.width > 50 && r.height > 50;
+        });
+      },
       { timeoutMs: 3000, intervalMs: 150 }
     );
   }
@@ -1237,7 +1355,23 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
       () => {
         // Prefer the dialog element — body text can match "upload files" in
         // toasts or the sources list after upload completes.
-        const dialog = document.querySelector('[role="dialog"], mat-dialog-container');
+        // Pick the real, VISIBLE Add-sources dialog. NotebookLM may keep a stray
+      // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
+      // not grab the first match — choose the largest visible one.
+      const dialog = (() => {
+        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const visible = all.filter((d) => {
+          const s = window.getComputedStyle(d);
+          if (s.display === "none" || s.visibility === "hidden") return false;
+          const r = d.getBoundingClientRect();
+          return r.width > 50 && r.height > 50;
+        });
+        visible.sort((a, b) => {
+          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          return rb.width * rb.height - ra.width * ra.height;
+        });
+        return visible[0] || null;
+      })();
         if (dialog) return false;
         return !/drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(document.body.textContent || "");
       },
@@ -1273,50 +1407,67 @@ async function cdpEval(tabId, expression) {
  * Step 1: Find all note cards in the right panel.
  * Step 2: Click each card to open it and scrape the full content.
  */
-async function extractNotesFromTab(tabId) {
-  // Step 0: Ensure the "Studio" tab/panel is visible.
-  // On narrow/vertical monitors the 3-column layout collapses and
-  // Studio becomes a tab that must be clicked first.
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      const isIconElement = (el) => {
-        if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
-        const tag = el.tagName?.toLowerCase() || "";
-        const cls = (el.className || "").toString().toLowerCase();
-        return tag === "mat-icon" || cls.includes("material-icons") || cls.includes("mat-icon");
-      };
-      const getCleanText = (node) => {
-        let result = "";
-        for (const child of node.childNodes) {
-          if (child.nodeType === Node.TEXT_NODE) result += child.textContent;
-          else if (child.nodeType === Node.ELEMENT_NODE) {
-            if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
-            if (isIconElement(child)) continue;
-            result += getCleanText(child);
-          }
-        }
-        return result;
-      };
-      // Look for a tab/button labeled "Studio" / "工作室".
-      const clickables = document.querySelectorAll(
-        '[role="tab"], button, [role="button"], a, [class*="tab"]'
-      );
-      const studioLabels = [
-        "studio", "工作室", "工作區", "スタジオ", "스튜디오",
-        "estudio", "atelier", "labor", "estúdio",
-      ];
-      for (const el of clickables) {
-        const text = getCleanText(el).trim().toLowerCase();
-        if (studioLabels.includes(text)) {
-          el.click();
-          return true;
-        }
+// Ensures the "Studio" tab/panel (which holds the saved notes) is visible.
+// On narrow/vertical monitors the 3-column layout collapses and Studio becomes
+// a tab that must be clicked first. Idempotent — if the note cards are already
+// present it does nothing. Injected into the page; must be self-contained.
+function ensureStudioVisibleFn() {
+  const isIconElement = (el) => {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    const tag = el.tagName?.toLowerCase() || "";
+    const cls = (el.className || "").toString().toLowerCase();
+    return tag === "mat-icon" || cls.includes("material-icons") || cls.includes("mat-icon");
+  };
+  const getCleanText = (node) => {
+    let result = "";
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) result += child.textContent;
+      else if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
+        if (isIconElement(child)) continue;
+        result += getCleanText(child);
       }
-      return false;
-    },
-  });
-  await sleep(1000);
+    }
+    return result;
+  };
+  // Already showing note cards / the Studio panel? Nothing to do.
+  if (document.querySelector(".artifact-title, [class*='artifact-title']")) return true;
+
+  // Look for a tab/button labeled "Studio" / localized equivalent and open it.
+  const clickables = document.querySelectorAll(
+    '[role="tab"], button, [role="button"], a, [class*="tab"]'
+  );
+  const studioLabels = [
+    "studio", "工作室", "工作區", "スタジオ", "스튜디오",
+    "estudio", "atelier", "labor", "estúdio",
+  ];
+  for (const el of clickables) {
+    const text = getCleanText(el).trim().toLowerCase();
+    if (studioLabels.includes(text)) {
+      el.click();
+      return true;
+    }
+  }
+  return false;
+}
+
+async function extractNotesFromTab(tabId) {
+  // Step 0: Ensure the Studio panel (which holds the note cards) is visible
+  // before scanning. In the collapsed/tab layout Studio is a tab that must be
+  // clicked, and Angular may take a moment to render the note cards — so we
+  // click Studio and poll until `.artifact-title` cards appear (up to ~4s).
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const ready = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => !!document.querySelector(".artifact-title, [class*='artifact-title']"),
+    });
+    if (ready?.[0]?.result) break;
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: ensureStudioVisibleFn,
+    });
+    await sleep(500);
+  }
 
   // Step 1: Scan for note card titles (just collect metadata, no tagging)
   const scanResult = await chrome.scripting.executeScript({
@@ -1341,12 +1492,64 @@ async function extractNotesFromTab(tabId) {
         return result;
       };
 
-      const allElements = document.querySelectorAll("*:not(style):not(script):not(link):not(meta):not(head)");
-      const seenCards = new Set();
-      const seenTitles = [];
       const normalize = (t) => t.replace(/\s+/g, " ").trim().toLowerCase();
       const relativeTimeRe = /(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제)/i;
+
+      // Generator tiles (Slide Deck, Mind Map, Quiz, Reports, Audio/Video
+      // Overview, Flashcards, Infographic, Data Table) describe themselves with a
+      // "Generate …" tooltip. Saved text notes never do. We use this as a guard so
+      // a tile can never be picked even if it ever borrows the note CSS class.
+      const generatorRe = /^(generate |创建|新增|生成|작성|générer |erstellen |criar |crear |genera )/i;
+
+      // Resolve the full, untruncated title for an artifact title element. The
+      // visible <span> text is ellipsized; the complete title lives in the cdk
+      // tooltip referenced by aria-describedby. Fall back to visible text.
+      const fullTitleFor = (titleEl) => {
+        const adId = (titleEl.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean)[0];
+        if (adId) {
+          const tip = document.getElementById(adId);
+          const tipText = (tip?.textContent || "").trim();
+          if (tipText) return tipText;
+        }
+        return getCleanText(titleEl).trim();
+      };
+
+      // PRIMARY STRATEGY — structural anchor.
+      // Saved text notes render their title as `span.artifact-title`, which is a
+      // tooltip trigger inside a `.artifact-item-button` card. This class is used
+      // ONLY by saved notes (not by the Studio generator tiles) and exists in both
+      // the collapsed/tab layout and the expanded three-column layout, so it is a
+      // reliable, language-independent anchor.
       const foundNotes = [];
+      const seenTitles = [];
+      const titleEls = document.querySelectorAll(".artifact-title, [class*='artifact-title']");
+      for (const titleEl of titleEls) {
+        const title = fullTitleFor(titleEl).replace(/\s+/g, " ").trim();
+        if (!title || title.length < 3) continue;
+        if (generatorRe.test(title)) continue; // never a generator tile
+
+        const normTitle = normalize(title);
+        if (seenTitles.some(s => s === normTitle)) continue;
+        seenTitles.push(normTitle);
+
+        // Pull the timestamp from the surrounding card, if present (best-effort).
+        const card = titleEl.closest(".artifact-item-button") || titleEl.parentElement;
+        const cardText = card ? getCleanText(card).trim() : "";
+        const tsMatch = cardText.match(relativeTimeRe);
+
+        foundNotes.push({
+          title: title.substring(0, 200),
+          type: "saved-note",
+          timestamp: tsMatch ? tsMatch[0] : "",
+        });
+      }
+
+      if (foundNotes.length > 0) return foundNotes;
+
+      // FALLBACK STRATEGY — legacy timestamp heuristic.
+      // Kept for older NotebookLM layouts that predate the artifact-* markup.
+      const allElements = document.querySelectorAll("*:not(style):not(script):not(link):not(meta):not(head)");
+      const seenCards = new Set();
 
       for (const el of allElements) {
         const style = window.getComputedStyle(el);
@@ -1447,6 +1650,21 @@ async function extractNotesFromTab(tabId) {
   const baseUrl = urlBefore?.[0]?.result || "";
 
   for (const card of noteCards) {
+    // In the collapsed/tab layout, back-navigation may land on Chat/Sources, so
+    // re-show the Studio panel and wait for the note cards before re-finding.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const ready = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => !!document.querySelector(".artifact-title, [class*='artifact-title']"),
+      });
+      if (ready?.[0]?.result) break;
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: ensureStudioVisibleFn,
+      });
+      await sleep(500);
+    }
+
     // Re-find and click the card by matching its title in the current DOM
     const clickResult = await chrome.scripting.executeScript({
       target: { tabId },
@@ -1471,37 +1689,108 @@ async function extractNotesFromTab(tabId) {
           return result;
         };
 
-        // Find elements containing the note title
-        const allElements = document.querySelectorAll("*:not(style):not(script):not(link):not(meta):not(head)");
-        let bestCard = null;
-        let bestSize = Infinity;
-        const relativeTimeRe = /(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제)/i;
+        // Resolve the full title for an artifact title element (tooltip first).
+        const fullTitleFor = (titleEl) => {
+          const adId = (titleEl.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean)[0];
+          if (adId) {
+            const tip = document.getElementById(adId);
+            const tipText = (tip?.textContent || "").trim();
+            if (tipText) return tipText;
+          }
+          return getCleanText(titleEl).trim();
+        };
+        const generatorRe = /^(generate |创建|新增|生成|작성|générer |erstellen |criar |crear |genera )/i;
+        const norm = (t) => (t || "").replace(/\s+/g, " ").trim().toLowerCase();
+        const wantNorm = norm(targetTitle);
 
-        for (const el of allElements) {
-          const style = window.getComputedStyle(el);
-          if (style.display === "none" || style.visibility === "hidden") continue;
-          const rawText = el.textContent?.trim() || "";
-          if (rawText.length > 2000 || rawText.length < 8) continue;
-          // Must contain the title and a timestamp pattern (card indicator)
-          if (!rawText.includes(targetTitle.substring(0, 30)) || !relativeTimeRe.test(rawText)) continue;
+        let card = null;
+        let artifactBtn = null;
 
-          // Prefer the smallest element that contains the full title
-          // (most specific = the actual card, not a parent container)
-          if (rawText.length < bestSize) {
-            bestSize = rawText.length;
-            bestCard = el;
+        // PRIMARY: match a saved-note card via its `.artifact-title` anchor.
+        // This guarantees we never click a Studio generator tile (Slide Deck,
+        // Mind Map, etc.) — those do not use `.artifact-title` and, defensively,
+        // carry a "Generate …" tooltip we exclude. Works collapsed or expanded.
+        const titleEls = document.querySelectorAll(".artifact-title, [class*='artifact-title']");
+        for (const titleEl of titleEls) {
+          const full = fullTitleFor(titleEl);
+          if (!full || generatorRe.test(full)) continue;
+          const n = norm(full);
+          if (n === wantNorm || n.startsWith(wantNorm) || wantNorm.startsWith(n)) {
+            card = titleEl.closest("artifact-library-note") ||
+                   titleEl.closest(".artifact-item-button") ||
+                   titleEl.parentElement;
+            // The element that actually opens the note is the full-width
+            // `.artifact-stretched-button` (a real <button>). Its sibling
+            // `.artifact-actions` button is the 3-dot overflow menu — avoid it.
+            artifactBtn = (card && card.querySelector(".artifact-stretched-button")) ||
+                          titleEl.closest(".artifact-button-content")?.querySelector(".artifact-stretched-button") ||
+                          null;
+            break;
           }
         }
 
-        if (!bestCard) return { success: false, error: "card-not-found-by-title" };
+        // If we found the dedicated open-button, click it natively and return.
+        if (artifactBtn) {
+          const rect = artifactBtn.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            artifactBtn.focus?.();
+            artifactBtn.click();
+            return { success: true, method: "artifact-stretched-button" };
+          }
+        }
 
-        // Walk up a bit to get the actual card container
-        let card = bestCard;
-        for (let i = 0; i < 3; i++) {
-          if (!card.parentElement) break;
-          if (card.parentElement.children.length > 5) break;
-          if (card.parentElement.tagName === "MAIN" || card.parentElement.tagName === "BODY") break;
-          card = card.parentElement;
+        // FALLBACK: legacy text + timestamp heuristic for older layouts.
+        if (!card) {
+          const allElements = document.querySelectorAll("*:not(style):not(script):not(link):not(meta):not(head)");
+          let bestCard = null;
+          let bestSize = Infinity;
+          const relativeTimeRe = /(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제)/i;
+
+          for (const el of allElements) {
+            const style = window.getComputedStyle(el);
+            if (style.display === "none" || style.visibility === "hidden") continue;
+            const rawText = el.textContent?.trim() || "";
+            if (rawText.length > 2000 || rawText.length < 8) continue;
+            // Must contain the title and a timestamp pattern (card indicator)
+            if (!rawText.includes(targetTitle.substring(0, 30)) || !relativeTimeRe.test(rawText)) continue;
+
+            // Prefer the smallest element that contains the full title
+            // (most specific = the actual card, not a parent container)
+            if (rawText.length < bestSize) {
+              bestSize = rawText.length;
+              bestCard = el;
+            }
+          }
+
+          if (!bestCard) return { success: false, error: "card-not-found-by-title" };
+
+          // Walk up a bit to get the actual card container
+          card = bestCard;
+          for (let i = 0; i < 3; i++) {
+            if (!card.parentElement) break;
+            if (card.parentElement.children.length > 5) break;
+            if (card.parentElement.tagName === "MAIN" || card.parentElement.tagName === "BODY") break;
+            card = card.parentElement;
+          }
+        }
+
+        // Click strategy 0: if we matched an artifact card, click it directly.
+        // Clicking the card itself (rather than searching its descendants) avoids
+        // accidentally hitting the note's overflow (3-dot) menu button.
+        if (card.classList && card.classList.contains("artifact-item-button")) {
+          const rect = card.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
+            card.dispatchEvent(new PointerEvent("pointerdown", opts));
+            card.dispatchEvent(new MouseEvent("mousedown", opts));
+            card.dispatchEvent(new PointerEvent("pointerup", opts));
+            card.dispatchEvent(new MouseEvent("mouseup", opts));
+            card.dispatchEvent(new MouseEvent("click", opts));
+            card.click?.();
+            return { success: true, method: "artifact-card-click" };
+          }
         }
 
         // Click strategy 1: Find <a> inside card
@@ -1555,15 +1844,28 @@ async function extractNotesFromTab(tabId) {
       continue;
     }
 
-    // Wait for the detail view — poll up to 6 seconds for signals
+    // Wait for the detail view — poll frequently (up to ~4s) for signals.
+    // The note editor (.ProseMirror) appearing is the fastest, most direct
+    // signal; banner/convert/breadcrumb/url-change are backups.
     let detailOpened = false;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      await sleep(1000);
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await sleep(400);
       const check = await chrome.scripting.executeScript({
         target: { tabId },
         func: () => {
           const bodyText = document.body.textContent || "";
+          // The open note renders as a `labs-tailwind-doc-viewer` in the Studio
+          // panel (not inside chat-panel). Its presence on-screen is the most
+          // direct "note opened" signal.
+          const vh = window.innerHeight || document.documentElement.clientHeight;
+          const editorEls = [...document.querySelectorAll("labs-tailwind-doc-viewer, note-editor .ProseMirror, .ProseMirror, rich-text-editor.note-editor")];
+          const editorVisible = editorEls.some((el) => {
+            if (el.closest("chat-panel")) return false;
+            const r = el.getBoundingClientRect();
+            return r.height > 30 && r.bottom > 0 && r.top < vh;
+          });
           return {
+            hasEditor: !!editorVisible,
             hasBanner: /saved\s+(responses?|notes?)\s+are\s+(view|read)|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i.test(bodyText),
             hasBreadcrumb: /(Studio|工作室|工作區|スタジオ|스튜디오|Estudio|Atelier|Labor|Estúdio)\s*[>›»]\s/i.test(bodyText),
             hasConvertBtn: /convert to source|转换为来源|轉換為來源|ソースに変換|소스로 변환|convertir en fuente|convertir en source|in quelle umwandeln|converter em fonte|converti in fonte/i.test(bodyText),
@@ -1572,7 +1874,7 @@ async function extractNotesFromTab(tabId) {
         },
       });
       const st = check?.[0]?.result || {};
-      if (st.hasBanner || st.hasBreadcrumb || st.hasConvertBtn || st.url !== baseUrl) {
+      if (st.hasEditor || st.hasBanner || st.hasBreadcrumb || st.hasConvertBtn || st.url !== baseUrl) {
         detailOpened = true;
         break;
       }
@@ -1601,10 +1903,55 @@ async function extractNotesFromTab(tabId) {
           }
           return result;
         };
+        // Replace NotebookLM inline citation chips with readable "(N)" markers.
+        // Each citation is `<button class="xap-inline-dialog"><span>N</span></button>`
+        // (the span's aria-label holds the full source). When several citations
+        // are adjacent they are merged into one "(20,21)". Operates on a clone so
+        // the live page is untouched. Plain-text years are never inside these
+        // buttons, so they are left alone — this is robust where regex is not.
+        const normalizeCitations = (clone) => {
+          const buttons = Array.from(clone.querySelectorAll("button.xap-inline-dialog, button[class*='xap-inline-dialog']"));
+          const visited = new Set();
+          for (const btn of buttons) {
+            if (visited.has(btn)) continue;
+            // Gather this citation plus any immediately-adjacent citation buttons
+            // (ignoring whitespace-only text nodes between them).
+            const group = [btn];
+            visited.add(btn);
+            let sib = btn.nextSibling;
+            while (sib) {
+              if (sib.nodeType === Node.TEXT_NODE && !sib.textContent.trim()) { sib = sib.nextSibling; continue; }
+              if (sib.nodeType === Node.ELEMENT_NODE && sib.matches?.("button.xap-inline-dialog, button[class*='xap-inline-dialog']")) {
+                group.push(sib); visited.add(sib); sib = sib.nextSibling; continue;
+              }
+              break;
+            }
+            const nums = group
+              .map((b) => (b.textContent || "").trim())
+              .filter((t) => /^\d{1,4}$/.test(t));
+            // Add a leading space so citations don't fuse onto the preceding word
+            // ("signaling" -> "signaling (20,21)"), but skip it if the text before
+            // already ends in whitespace to avoid a double space.
+            const prev = btn.previousSibling;
+            const prevEndsWS = prev && prev.nodeType === Node.TEXT_NODE && /\s$/.test(prev.textContent || "");
+            const lead = prevEndsWS ? "" : " ";
+            const replacement = document.createTextNode(nums.length ? `${lead}(${nums.join(",")})` : "");
+            btn.parentNode.insertBefore(replacement, btn);
+            for (const b of group) b.remove();
+          }
+        };
         const getCleanHtml = (node) => {
           const clone = node.cloneNode(true);
           clone.querySelectorAll("style, script, mat-icon, .material-icons").forEach(s => s.remove());
+          normalizeCitations(clone);
           return clone.innerHTML;
+        };
+        // Text variant that also normalizes citations (clones first).
+        const getCleanTextWithCitations = (node) => {
+          const clone = node.cloneNode(true);
+          clone.querySelectorAll("style, script, mat-icon, .material-icons").forEach(s => s.remove());
+          normalizeCitations(clone);
+          return getCleanText(clone);
         };
         const isChrome = (text) => {
           if (/convert to source|转换为来源|轉換為來源|ソースに変換|소스로 변환|convertir en fuente|convertir en source|in quelle umwandeln|converter em fonte|converti in fonte/i.test(text) && text.length < 80) return true;
@@ -1619,6 +1966,60 @@ async function extractNotesFromTab(tabId) {
           url: window.location.href,
           bodyLen: (document.body.textContent || "").length,
         };
+
+        // === STRATEGY 0: Note body container ===
+        // The opened note's body renders inside the Studio panel as a
+        // `labs-tailwind-doc-viewer` (the note document viewer), within
+        // `<studio-panel>` / `note-editor`. This is the SAME element in both the
+        // expanded (3-column) and collapsed (tab) layouts.
+        //
+        // CRITICAL: the Chat conversation reuses similar message markup and the
+        // chat history is also in the DOM. If we scraped document-wide (or just
+        // "largest .message-content") we'd grab chat and return identical content
+        // for every note. So we anchor on the Studio note viewer and explicitly
+        // exclude anything inside `chat-panel`. Among matches, prefer the one
+        // that is on-screen (the open note) and has the most text.
+        const vh = window.innerHeight || document.documentElement.clientHeight;
+        const vw = window.innerWidth || document.documentElement.clientWidth;
+        const isOnScreen = (r) =>
+          r.width > 100 && r.height > 30 &&
+          r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
+        const bodySelectors = [
+          // Studio note viewer (read-only saved responses AND notes).
+          "studio-panel labs-tailwind-doc-viewer.note-editor",
+          "studio-panel labs-tailwind-doc-viewer",
+          "labs-tailwind-doc-viewer.note-editor",
+          "labs-tailwind-doc-viewer",
+          // Editable rich-text notes.
+          "note-editor .ProseMirror",
+          ".ProseMirror",
+          ".prosemirror-editor",
+          "rich-text-editor.note-editor .ProseMirror",
+        ];
+        const pickBody = (requireOnScreen) => {
+          for (const sel of bodySelectors) {
+            let best = null;
+            document.querySelectorAll(sel).forEach((el) => {
+              if (el.closest("chat-panel")) return; // never the Chat conversation
+              const r = el.getBoundingClientRect();
+              if (requireOnScreen && !isOnScreen(r)) return;
+              const text = getCleanText(el).trim();
+              if (text.length < 5 || isChrome(text)) return;
+              if (!best || text.length > getCleanText(best).trim().length) best = el;
+            });
+            if (best) {
+              const text = getCleanTextWithCitations(best).trim();
+              if (text.length > 5) {
+                debug.editorFound = sel + (requireOnScreen ? "" : " (any)");
+                return { content: text, html: getCleanHtml(best), method: "note-body:" + sel, debug };
+              }
+            }
+          }
+          return null;
+        };
+        // Prefer the on-screen note body; fall back to any non-chat note body.
+        const body0 = pickBody(true) || pickBody(false);
+        if (body0) return body0;
 
         // === STRATEGY 1: Banner-anchored ===
         // Find "Saved responses are view only" or similar banner
@@ -1889,7 +2290,7 @@ async function extractNotesFromTab(tabId) {
       },
     });
 
-    await sleep(1500);
+    await sleep(800);
   }
 
   return notes;
@@ -2216,10 +2617,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         try {
           const notes = await extractNotesFromTab(nlmTab.id);
-          return { success: true, data: notes, debug: notes.length === 0 ? `Page: ${nlmTab.title}` : undefined };
+          const notebookId = extractNotebookIdFromUrl(nlmTab.url);
+          // Cache extracted notes per notebook so they survive the popup being
+          // closed/reopened. A fresh "Find Text Notes" overwrites the cache.
+          if (notebookId) {
+            await chrome.storage.local.set({
+              [notesCacheKey(notebookId)]: {
+                notebookId,
+                notebookTitle: nlmTab.title || "",
+                notes,
+                extractedAt: Date.now(),
+              },
+            });
+          }
+          return { success: true, data: notes, notebookId, debug: notes.length === 0 ? `Page: ${nlmTab.title}` : undefined };
         } catch (e) {
           return { success: false, error: e.message };
         }
+      }
+
+      case "n2z-get-cached-notes": {
+        // Return previously-extracted notes for the active notebook, if any.
+        const { tab: cacheTab } = await resolveNotebookLMTab();
+        const notebookId = cacheTab ? extractNotebookIdFromUrl(cacheTab.url) : "";
+        if (!notebookId) return { success: false, error: "No NotebookLM tab found" };
+        const stored = await chrome.storage.local.get(notesCacheKey(notebookId));
+        const entry = stored[notesCacheKey(notebookId)];
+        if (entry && Array.isArray(entry.notes)) {
+          return { success: true, data: entry.notes, notebookId, extractedAt: entry.extractedAt };
+        }
+        return { success: true, data: [], notebookId };
       }
 
       case "n2z-import-selected-notes": {

@@ -5,14 +5,17 @@
 document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
+  await setupTheme();
   setupTabs();
   await checkConnection();
   await loadLibraries();
+  setupSearchableSelects();
   await loadNotebookInfo();
   await loadMappings();
   setupEventListeners();
   await initPrereqBanners();
   await resumeInProgressSync();
+  await loadCachedNotes();
 }
 
 async function initPrereqBanners() {
@@ -94,6 +97,127 @@ async function resumeInProgressSync() {
       await loadMappings(result?.mapping ? [result.mapping] : []);
     }
   }, 1500);
+}
+
+// ─── Theme (dark mode) ───────────────────────────────────────────────
+
+// Applies the saved theme (default: dark) and wires the header toggle.
+async function setupTheme() {
+  const { theme } = await chrome.storage.local.get("theme");
+  const current = theme || "dark"; // default to dark
+  applyTheme(current);
+
+  const btn = document.getElementById("theme-toggle");
+  if (btn) {
+    btn.addEventListener("click", async () => {
+      const next = document.body.classList.contains("dark") ? "light" : "dark";
+      applyTheme(next);
+      await chrome.storage.local.set({ theme: next });
+    });
+  }
+}
+
+function applyTheme(theme) {
+  const dark = theme === "dark";
+  document.body.classList.toggle("dark", dark);
+  const btn = document.getElementById("theme-toggle");
+  if (btn) {
+    btn.textContent = dark ? "☀️" : "🌙";
+    btn.title = dark ? "Switch to light mode" : "Switch to dark mode";
+  }
+}
+
+// ─── Searchable collection dropdowns ─────────────────────────────────
+
+// Turns each hidden <select> into a type-to-filter combobox. The <select>
+// stays the source of truth (its value + change event), so all downstream
+// code keeps working; we just drive it from a filtered list the user types into.
+function setupSearchableSelects() {
+  document.querySelectorAll(".searchable-select").forEach((wrap) => {
+    const select = document.getElementById(wrap.dataset.for);
+    if (select) makeSearchable(wrap, select);
+  });
+}
+
+function makeSearchable(wrap, select) {
+  const input = wrap.querySelector(".searchable-input");
+  const list = wrap.querySelector(".searchable-list");
+
+  // Reflect the select's current selection into the input text.
+  const syncInputFromSelect = () => {
+    const opt = select.options[select.selectedIndex];
+    input.value = opt && opt.value ? opt.textContent.trim() : "";
+  };
+
+  // Build the filtered option list. Matches are case-insensitive substring;
+  // an empty query shows everything. The placeholder option (value "") is
+  // shown only for the empty query so users can clear the selection.
+  const renderList = (query) => {
+    const q = query.trim().toLowerCase();
+    list.innerHTML = "";
+    let count = 0;
+    for (const opt of select.options) {
+      const label = opt.textContent.trim();
+      if (!opt.value && q) continue; // hide placeholder while searching
+      if (q && !label.toLowerCase().includes(q)) continue;
+      const row = document.createElement("div");
+      row.className = "searchable-option";
+      if (opt.value === select.value) row.classList.add("selected");
+      row.textContent = label;
+      row.dataset.value = opt.value;
+      row.addEventListener("mousedown", (e) => {
+        e.preventDefault(); // keep focus handling predictable
+        select.value = opt.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        syncInputFromSelect();
+        closeList();
+      });
+      list.appendChild(row);
+      count++;
+    }
+    if (count === 0) {
+      const empty = document.createElement("div");
+      empty.className = "searchable-empty";
+      empty.textContent = "No collections match";
+      list.appendChild(empty);
+    }
+  };
+
+  const openList = () => {
+    renderList(""); // show the full list on open; typing filters it
+    list.classList.remove("hidden");
+  };
+  const closeList = () => {
+    list.classList.add("hidden");
+    syncInputFromSelect(); // restore selected label if the user typed but didn't pick
+  };
+
+  input.addEventListener("focus", () => { input.select(); openList(); });
+  input.addEventListener("input", () => { renderList(input.value); list.classList.remove("hidden"); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { input.blur(); }
+    if (e.key === "Enter") {
+      const first = list.querySelector(".searchable-option");
+      if (first) {
+        select.value = first.dataset.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        syncInputFromSelect();
+        list.classList.add("hidden");
+        input.blur();
+      }
+      e.preventDefault();
+    }
+  });
+  // Close when clicking outside this widget.
+  document.addEventListener("mousedown", (e) => {
+    if (!wrap.contains(e.target)) closeList();
+  });
+
+  // Keep input text correct when the select is repopulated/changed in code.
+  select.addEventListener("change", syncInputFromSelect);
+  // Expose a refresh hook so repopulation can reset the input.
+  wrap._refresh = syncInputFromSelect;
+  syncInputFromSelect();
 }
 
 // ─── Tab navigation ──────────────────────────────────────────────────
@@ -205,6 +329,9 @@ function populateCollectionsForLibrary(libSelect, colSelect) {
   const lib = window._libraryTree.find((l) => l.libraryId === libraryId);
   colSelect.innerHTML = '<option value="">Select a collection...</option>';
   if (lib) populateCollectionOptions(colSelect, lib.collections, 0);
+  // Reset the matching searchable-select input to reflect the cleared selection.
+  const wrap = document.querySelector(`.searchable-select[data-for="${colSelect.id}"]`);
+  if (wrap && wrap._refresh) wrap._refresh();
 }
 
 function populateCollectionOptions(select, collections, depth) {
@@ -642,6 +769,53 @@ function renderProgressFiles(data) {
   ul.classList.remove("hidden");
 }
 
+// Renders the list of notes into the popup and enables import.
+function renderNotes(notes, { cached = false } = {}) {
+  const container = document.getElementById("notes-container");
+  const importBtn = document.getElementById("btn-import");
+
+  container.innerHTML = "";
+  for (const note of notes) {
+    const item = document.createElement("div");
+    item.className = "note-item";
+
+    const preview = stripHtml(note.content || note.html || "").substring(0, 120);
+    item.innerHTML = `
+      <input type="checkbox" checked data-note-id="${escapeHtml(note.id)}" />
+      <div class="note-item-info">
+        <div class="note-item-title">${escapeHtml(note.title)}</div>
+        <div class="note-item-preview">${escapeHtml(preview || "(no content)")}</div>
+      </div>
+    `;
+    container.appendChild(item);
+  }
+
+  const hint = document.getElementById("notes-cache-hint");
+  if (hint) {
+    hint.textContent = cached
+      ? "Showing previously found notes. Click Find Text Notes to refresh."
+      : "";
+    hint.classList.toggle("hidden", !cached);
+  }
+
+  window._extractedNotes = notes;
+  importBtn.disabled = notes.length === 0;
+}
+
+// On popup open, show cached notes for the current notebook (if any) so the
+// user can close/reopen the popup without losing a completed extraction.
+async function loadCachedNotes() {
+  try {
+    const result = await sendMessage({ type: "n2z-get-cached-notes" }, 4000);
+    const notes = (result && result.success && result.data) || [];
+    if (notes.length === 0) return;
+    document.getElementById("found-notes").classList.remove("hidden");
+    renderNotes(notes, { cached: true });
+  } catch {
+    // Non-fatal — user can still click Find Text Notes.
+  }
+}
+
 async function handleExtractNotes() {
   const resultDiv = document.getElementById("import-result");
   const notesSection = document.getElementById("found-notes");
@@ -671,26 +845,7 @@ async function handleExtractNotes() {
       return;
     }
 
-    container.innerHTML = "";
-    for (const note of notes) {
-      const item = document.createElement("div");
-      item.className = "note-item";
-
-      const preview = stripHtml(note.content || note.html || "").substring(0, 120);
-      const debugInfo = note._method ? ` [${note._method}]` : "";
-      const debugExtra = note._debug ? ` det:${note._debug.detailOpened} ban:${!!note._debug.bannerFound} bc:${!!note._debug.breadcrumbFound}` : "";
-      item.innerHTML = `
-        <input type="checkbox" checked data-note-id="${escapeHtml(note.id)}" />
-        <div class="note-item-info">
-          <div class="note-item-title">${escapeHtml(note.title)}</div>
-          <div class="note-item-preview">${escapeHtml((note.type !== "saved-note" ? note.type + " — " : "") + (preview || "(no content)") + debugInfo + debugExtra)}</div>
-        </div>
-      `;
-      container.appendChild(item);
-    }
-
-    window._extractedNotes = notes;
-    importBtn.disabled = false;
+    renderNotes(notes, { cached: false });
   } catch (e) {
     container.innerHTML = `<p class="empty-state">Error: ${escapeHtml(e.message)}</p>`;
     importBtn.disabled = true;
