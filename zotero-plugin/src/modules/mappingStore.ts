@@ -12,7 +12,11 @@ export interface CollectionMapping {
   notebookUrl: string;
   lastSyncForward: string | null;
   lastSyncBackward: string | null;
-  syncedItemHashes: Record<string, string>;
+  // Per-item upload record, keyed by Zotero itemKey. Historically a bare
+  // timestamp string; newer syncs store an object with the captured NotebookLM
+  // source identity ({ at, name, label, url, faviconDomain }) for removal
+  // detection. Stored as JSON, so the union round-trips faithfully.
+  syncedItemHashes: Record<string, string | Record<string, unknown>>;
   importedNoteIds: string[];
 }
 
@@ -88,7 +92,7 @@ export function updateSyncTimestamp(
 export function addSyncedItemHash(
   collectionId: number,
   itemKey: string,
-  hash: string,
+  hash: string | Record<string, unknown>,
 ): void {
   const mappings = readMappings();
   const mapping = mappings.find((m) => m.collectionId === collectionId);

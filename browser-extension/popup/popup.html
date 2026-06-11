@@ -8,8 +8,12 @@
 </head>
 <body>
   <header>
-    <h1>NZBridge</h1>
+    <div class="brand">
+      <img src="../icons/icon48.png" alt="" class="logo" width="20" height="20" />
+      <h1>NZBridge</h1>
+    </div>
     <div class="header-right">
+      <button id="pin-toggle" class="theme-toggle" title="Open in a floating window you can move around" aria-label="Open in a floating window">📌</button>
       <button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
       <span id="status-dot" class="dot disconnected"></span>
     </div>
@@ -64,7 +68,7 @@
         <div class="item-group" id="group-files">
           <div class="item-group-header">
             <label class="item-group-label">
-              <input type="checkbox" id="select-all-files" checked />
+              <input type="checkbox" id="select-all-files" />
               <span class="item-group-title">PDFs <span id="file-count" class="item-group-count"></span></span>
             </label>
           </div>
@@ -73,7 +77,7 @@
         <div class="item-group" id="group-urls">
           <div class="item-group-header">
             <label class="item-group-label">
-              <input type="checkbox" id="select-all-urls" checked />
+              <input type="checkbox" id="select-all-urls" />
               <span class="item-group-title">Web URLs <span id="url-count" class="item-group-count"></span></span>
             </label>
           </div>
@@ -92,12 +96,18 @@
         <span class="progress-count" id="progress-count"></span>
       </div>
       <ul class="progress-files hidden" id="progress-files"></ul>
+      <button id="btn-cancel-sync" class="btn cancel" title="Stop the sync after the current batch. Files already uploaded stay in the notebook.">
+        Cancel upload
+      </button>
     </div>
     <div class="btn-group">
       <button id="btn-sync" class="btn primary" disabled>
         Sync to NotebookLM
       </button>
-      <button id="btn-reset-sync" class="btn secondary" style="flex: 0.4; font-size: 11px;" disabled>
+      <button id="btn-check-notebook" class="btn secondary" title="Check the open notebook and clear the green check from any source you removed there, so it can be re-uploaded. It may take a minute or so — press the button a couple of times and check back later." disabled>
+        Check notebook
+      </button>
+      <button id="btn-reset-sync" class="btn secondary" title="Clear ALL upload markers for this collection (forces a full re-sync). Use 'Check notebook' instead to only clear sources you removed." disabled>
         Reset
       </button>
     </div>
@@ -174,7 +184,21 @@
     <p class="tab-description">Latest releases and upcoming features.</p>
 
     <div class="update-section">
-      <h3 class="update-version">v0.3.3 <span class="update-tag current">Current</span></h3>
+      <h3 class="update-version">v0.4.0 <span class="update-tag current">Current</span></h3>
+      <ul class="update-list">
+        <li>Uploaded sources now show a green check — items already in the connected notebook are marked and skipped, so you only sync what's new</li>
+        <li>"Already uploaded" is tracked reliably per notebook: PDFs by filename and URLs by their source link, so it survives closing/reopening the popup and isn't fooled by renaming a source in NotebookLM</li>
+        <li>New "Check notebook" button: clears the green check from any source you removed in NotebookLM so it can be re-uploaded (may take a minute — click again and check back)</li>
+        <li>Cancel upload: stop a sync in progress; files already uploaded are kept</li>
+        <li>Pin the popup into a floating, movable window that stays open while you work in NotebookLM</li>
+        <li>The To Zotero tab now defaults its target to the collection you picked for syncing (still changeable)</li>
+        <li>Your selected collection is remembered when you reopen the popup</li>
+        <li>Items are unchecked by default so you pick exactly what to upload; refreshed, more even UI in light and dark mode</li>
+      </ul>
+    </div>
+
+    <div class="update-section">
+      <h3 class="update-version">v0.3.3</h3>
       <ul class="update-list">
         <li>Fix: "Find Text Notes" reliably finds saved text notes again after NotebookLM's Studio redesign. Notes are detected by structure, not timestamps, and never confused with Studio generators (Slide Deck, Mind Map, etc.)</li>
         <li>Fix: each note now extracts its own content correctly (no more duplicated text) in both the expanded and collapsed layouts, including read-only saved responses</li>
