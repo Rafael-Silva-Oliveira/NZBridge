@@ -7,6 +7,8 @@ import {
   getCollectionTree,
   getAllLibrariesTree,
   getExportableItems,
+  getExportableItemsByTag,
+  getTagsForLibrary,
   getFileAsBase64,
   debugCollectionItems,
 } from "./collection";
@@ -24,19 +26,22 @@ function sendJson(
   statusCode: number,
   data: any,
 ) {
-  sendResponseCallback(
-    statusCode,
-    "application/json",
-    JSON.stringify(data),
-  );
+  sendResponseCallback(statusCode, "application/json", JSON.stringify(data));
 }
 
 function success(sendResponseCallback: Function, data?: any) {
   sendJson(sendResponseCallback, 200, { success: true, data });
 }
 
-function error(sendResponseCallback: Function, statusCode: number, message: string) {
-  sendJson(sendResponseCallback, statusCode, { success: false, error: message });
+function error(
+  sendResponseCallback: Function,
+  statusCode: number,
+  message: string,
+) {
+  sendJson(sendResponseCallback, statusCode, {
+    success: false,
+    error: message,
+  });
 }
 
 /**
@@ -94,8 +99,33 @@ class LibrariesEndpoint {
 }
 
 /**
- * POST /n2z/list — List exportable items from a collection
- * Body: { collectionId: number, tag?: string }
+ * POST /n2z/tags — List all tags in a library
+ * Body: { libraryId?: number }
+ */
+class TagsEndpoint {
+  supportedMethods = ["POST"];
+  supportedDataTypes = ["application/json"];
+  permitBookmarklet = false;
+
+  async init(_urlObj: any, data: any, sendResponseCallback: Function) {
+    try {
+      const body = typeof data === "string" ? JSON.parse(data) : data;
+      ztoolkit.log(
+        `[n2z] /n2z/tags requested for libraryId=${body?.libraryId}`,
+      );
+      const tags = await getTagsForLibrary(body?.libraryId);
+      ztoolkit.log(`[n2z] /n2z/tags returning ${tags.length} tag(s)`);
+      success(sendResponseCallback, tags);
+    } catch (e: any) {
+      ztoolkit.log(`[n2z] /n2z/tags error: ${e.message}`);
+      error(sendResponseCallback, 500, e.message);
+    }
+  }
+}
+
+/**
+ * POST /n2z/list — List exportable items from a collection or by tag across a library
+ * Body: { collectionId: number } | { libraryId: number, tag: string }
  */
 class ListEndpoint {
   supportedMethods = ["POST"];
@@ -105,13 +135,21 @@ class ListEndpoint {
   async init(_urlObj: any, data: any, sendResponseCallback: Function) {
     try {
       const body = typeof data === "string" ? JSON.parse(data) : data;
-      if (!body?.collectionId) {
-        error(sendResponseCallback, 400, "collectionId is required");
+      let items;
+      if (body?.tag && body?.libraryId != null) {
+        items = await getExportableItemsByTag(body.libraryId, body.tag);
+      } else if (body?.collectionId) {
+        items = await getExportableItems(body.collectionId, {
+          tag: body.tag,
+        });
+      } else {
+        error(
+          sendResponseCallback,
+          400,
+          "Either collectionId or (libraryId + tag) is required",
+        );
         return;
       }
-      const items = await getExportableItems(body.collectionId, {
-        tag: body.tag,
-      });
       success(sendResponseCallback, items);
     } catch (e: any) {
       error(sendResponseCallback, 500, e.message);
@@ -137,10 +175,11 @@ class FileEndpoint {
       }
 
       // Check max file size preference
-      const maxSizeMB = (Zotero.Prefs.get(
-        `${addon.data.config.prefsPrefix}.maxFileSize`,
-        true,
-      ) as number) || 200;
+      const maxSizeMB =
+        (Zotero.Prefs.get(
+          `${addon.data.config.prefsPrefix}.maxFileSize`,
+          true,
+        ) as number) || 200;
 
       const fileData = await getFileAsBase64(body.attachmentId);
       const fileSizeMB = fileData.fileSize / (1024 * 1024);
@@ -205,7 +244,11 @@ class MappingEndpoint {
           break;
 
         default:
-          error(sendResponseCallback, 400, "Invalid action. Use: get, getAll, set, remove");
+          error(
+            sendResponseCallback,
+            400,
+            "Invalid action. Use: get, getAll, set, remove",
+          );
       }
     } catch (e: any) {
       error(sendResponseCallback, 500, e.message);
@@ -294,6 +337,7 @@ const endpoints: Record<string, any> = {
   "/n2z/status": StatusEndpoint,
   "/n2z/libraries": LibrariesEndpoint,
   "/n2z/collections": CollectionsEndpoint,
+  "/n2z/tags": TagsEndpoint,
   "/n2z/list": ListEndpoint,
   "/n2z/file": FileEndpoint,
   "/n2z/mapping": MappingEndpoint,

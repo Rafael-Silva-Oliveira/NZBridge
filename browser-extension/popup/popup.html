@@ -1,316 +1,571 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NZBridge</title>
-  <link rel="stylesheet" href="popup.css" />
-</head>
-<body>
-  <header>
-    <div class="brand">
-      <img src="../icons/icon48.png" alt="" class="logo" width="20" height="20" />
-      <h1>NZBridge</h1>
-    </div>
-    <div class="header-right">
-      <button id="pin-toggle" class="theme-toggle" title="Open in a floating window you can move around" aria-label="Open in a floating window">📌</button>
-      <button id="theme-toggle" class="theme-toggle" title="Toggle dark mode" aria-label="Toggle dark mode">🌙</button>
-      <span id="status-dot" class="dot disconnected"></span>
-    </div>
-  </header>
-
-  <!-- Connection error -->
-  <div id="error-banner" class="banner error hidden">
-    Cannot connect to Zotero. Is it running with NZBridge installed?
-  </div>
-
-  <!-- Tab navigation -->
-  <nav class="tabs">
-    <button class="tab active" data-tab="sync">To NotebookLM</button>
-    <button class="tab" data-tab="import">To Zotero</button>
-    <button class="tab" data-tab="mappings">Mappings</button>
-    <button class="tab" data-tab="updates">Updates</button>
-  </nav>
-
-  <!-- Tab: Forward Sync -->
-  <section id="tab-sync" class="tab-content active">
-    <div class="prereq-banner" id="prereq-banner">
-      <button class="prereq-toggle" id="prereq-toggle" title="Collapse">&#x25BC;</button>
-      <span class="prereq-label">Using NZBridge</span>
-      <div class="prereq-body" id="prereq-body">
-        <ol class="prereq-list">
-          <li>Open NotebookLM and enter the target notebook page.</li>
-          <li>Select the Zotero library and collection you want to sync.</li>
-          <li>Click Sync to NotebookLM. Multilingual NotebookLM interfaces are supported.</li>
-        </ol>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NZBridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <img
+          src="../icons/icon48.png"
+          alt=""
+          class="logo"
+          width="20"
+          height="20"
+        />
+        <h1>NZBridge</h1>
       </div>
-    </div>
-    <p class="tab-description">Upload PDFs and URLs from a Zotero collection as sources in NotebookLM.</p>
-    <div class="field">
-      <label for="library-select">Library</label>
-      <select id="library-select">
-        <option value="">Loading...</option>
-      </select>
-    </div>
-    <div class="field">
-      <label for="collection-select">Zotero Collection</label>
-      <div class="searchable-select" data-for="collection-select">
-        <input type="text" class="searchable-input" placeholder="Select a collection..." autocomplete="off" />
-        <div class="searchable-list hidden"></div>
+      <div class="header-right">
+        <button
+          id="pin-toggle"
+          class="theme-toggle"
+          title="Open in a floating window you can move around"
+          aria-label="Open in a floating window"
+        >
+          📌
+        </button>
+        <button
+          id="theme-toggle"
+          class="theme-toggle"
+          title="Toggle dark mode"
+          aria-label="Toggle dark mode"
+        >
+          🌙
+        </button>
+        <span id="status-dot" class="dot disconnected"></span>
       </div>
-      <select id="collection-select" class="searchable-hidden">
-        <option value="">Select a collection...</option>
-      </select>
+    </header>
+
+    <!-- Connection error -->
+    <div id="error-banner" class="banner error hidden">
+      Cannot connect to Zotero. Is it running with NZBridge installed?
     </div>
-    <div id="item-preview" class="item-preview hidden">
-      <div id="item-summary" class="info-text"></div>
-      <div id="item-list" class="item-list hidden">
-        <div class="item-group" id="group-files">
-          <div class="item-group-header">
-            <label class="item-group-label">
-              <input type="checkbox" id="select-all-files" />
-              <span class="item-group-title">PDFs <span id="file-count" class="item-group-count"></span></span>
-            </label>
-          </div>
-          <div id="files-container" class="item-rows"></div>
-        </div>
-        <div class="item-group" id="group-urls">
-          <div class="item-group-header">
-            <label class="item-group-label">
-              <input type="checkbox" id="select-all-urls" />
-              <span class="item-group-title">Web URLs <span id="url-count" class="item-group-count"></span></span>
-            </label>
-          </div>
-          <div id="urls-container" class="item-rows"></div>
+
+    <!-- Tab navigation -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="sync">To NotebookLM</button>
+      <button class="tab" data-tab="import">To Zotero</button>
+      <button class="tab" data-tab="mappings">Mappings</button>
+      <button class="tab" data-tab="updates">Updates</button>
+    </nav>
+
+    <!-- Tab: Forward Sync -->
+    <section id="tab-sync" class="tab-content active">
+      <div class="prereq-banner" id="prereq-banner">
+        <button class="prereq-toggle" id="prereq-toggle" title="Collapse">
+          &#x25BC;
+        </button>
+        <span class="prereq-label">Using NZBridge</span>
+        <div class="prereq-body" id="prereq-body">
+          <ol class="prereq-list">
+            <li>Open NotebookLM and enter the target notebook page.</li>
+            <li>Select the Zotero library and collection you want to sync.</li>
+            <li>
+              Click Sync to NotebookLM. Multilingual NotebookLM interfaces are
+              supported.
+            </li>
+          </ol>
         </div>
       </div>
-    </div>
-    <div class="field">
-      <label>NotebookLM Notebook</label>
-      <div id="notebook-info" class="info-text">Checking...</div>
-    </div>
-    <div id="sync-progress" class="progress hidden">
-      <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
-      <div class="progress-footer">
-        <span class="progress-text" id="progress-text">Starting…</span>
-        <span class="progress-count" id="progress-count"></span>
+      <p class="tab-description">
+        Upload PDFs and URLs from a Zotero collection or tag as sources in
+        NotebookLM.
+      </p>
+      <div class="field">
+        <label for="library-select">Library</label>
+        <select id="library-select">
+          <option value="">Loading...</option>
+        </select>
       </div>
-      <ul class="progress-files hidden" id="progress-files"></ul>
-      <button id="btn-cancel-sync" class="btn cancel" title="Stop the sync after the current batch. Files already uploaded stay in the notebook.">
-        Cancel upload
-      </button>
-    </div>
-    <div class="btn-group">
-      <button id="btn-sync" class="btn primary" disabled>
-        Sync to NotebookLM
-      </button>
-      <button id="btn-check-notebook" class="btn secondary" title="Check the open notebook and clear the green check from any source you removed there, so it can be re-uploaded. It may take a minute or so — press the button a couple of times and check back later." disabled>
-        Check notebook
-      </button>
-      <button id="btn-reset-sync" class="btn secondary" title="Clear ALL upload markers for this collection (forces a full re-sync). Use 'Check notebook' instead to only clear sources you removed." disabled>
-        Reset
-      </button>
-    </div>
-    <div id="sync-result" class="result hidden"></div>
-  </section>
-
-  <!-- Tab: Backward Sync (Import) -->
-  <section id="tab-import" class="tab-content">
-    <div class="prereq-banner" id="prereq-banner-import">
-      <button class="prereq-toggle" id="prereq-toggle-import" title="Collapse">&#x25BC;</button>
-      <span class="prereq-label">Using NZBridge</span>
-      <div class="prereq-body" id="prereq-body-import">
-        <ol class="prereq-list">
-          <li>Open NotebookLM and enter the target notebook page.</li>
-          <li>Make sure the NotebookLM Studio panel is available.</li>
-          <li>Select the Zotero library and target collection.</li>
-          <li>Click Find Text Notes, then import the selected notes. Multilingual NotebookLM interfaces are supported.</li>
-        </ol>
+      <div class="field mode-toggle-field">
+        <label>Search by</label>
+        <div class="mode-toggle" role="group" aria-label="Search mode">
+          <button
+            type="button"
+            class="mode-option active"
+            data-mode="collection"
+          >
+            Collections
+          </button>
+          <button type="button" class="mode-option" data-mode="tag">
+            Tags
+          </button>
+        </div>
       </div>
-    </div>
-    <p class="tab-description">Extract saved notes from NotebookLM and import them into a Zotero collection.</p>
-    <div class="field">
-      <label for="import-library-select">Library</label>
-      <select id="import-library-select">
-        <option value="">Loading...</option>
-      </select>
-    </div>
-    <div class="field">
-      <label for="import-collection-select">Target Zotero Collection</label>
-      <div class="searchable-select" data-for="import-collection-select">
-        <input type="text" class="searchable-input" placeholder="Select a collection..." autocomplete="off" />
-        <div class="searchable-list hidden"></div>
+      <div class="field">
+        <label for="collection-select" id="sync-target-label"
+          >Zotero Collection</label
+        >
+        <div class="searchable-select" data-for="collection-select">
+          <input
+            type="text"
+            class="searchable-input"
+            placeholder="Select a collection..."
+            autocomplete="off"
+          />
+          <div class="searchable-list hidden"></div>
+        </div>
+        <select id="collection-select" class="searchable-hidden">
+          <option value="">Select a collection...</option>
+        </select>
       </div>
-      <select id="import-collection-select" class="searchable-hidden">
-        <option value="">Select a collection...</option>
-      </select>
-    </div>
-    <div class="field">
-      <label for="custom-tags">Custom Tags (comma-separated)</label>
-      <input type="text" id="custom-tags" placeholder="e.g. review, project-x" />
-    </div>
-    <div id="found-notes" class="notes-list hidden">
-      <div class="notes-header">
-        <label>Found Notes:</label>
-        <label class="select-all-label">
-          <input type="checkbox" id="select-all" checked />
-          Select all
-        </label>
+      <div id="item-preview" class="item-preview hidden">
+        <div id="item-summary" class="info-text"></div>
+        <div id="item-list" class="item-list hidden">
+          <div class="item-group" id="group-files">
+            <div class="item-group-header">
+              <label class="item-group-label">
+                <input type="checkbox" id="select-all-files" />
+                <span class="item-group-title"
+                  >PDFs <span id="file-count" class="item-group-count"></span
+                ></span>
+              </label>
+            </div>
+            <div id="files-container" class="item-rows"></div>
+          </div>
+          <div class="item-group" id="group-urls">
+            <div class="item-group-header">
+              <label class="item-group-label">
+                <input type="checkbox" id="select-all-urls" />
+                <span class="item-group-title"
+                  >Web URLs <span id="url-count" class="item-group-count"></span
+                ></span>
+              </label>
+            </div>
+            <div id="urls-container" class="item-rows"></div>
+          </div>
+        </div>
       </div>
-      <div id="notes-cache-hint" class="cache-hint hidden"></div>
-      <div id="notes-container"></div>
-    </div>
-    <div class="btn-group">
-      <button id="btn-extract" class="btn secondary">
-        Find Text Notes
-      </button>
-      <button id="btn-import" class="btn primary" disabled>
-        Import Selected
-      </button>
-    </div>
-    <div id="import-result" class="result hidden"></div>
-  </section>
+      <div class="field">
+        <label>NotebookLM Notebook</label>
+        <div id="notebook-info" class="info-text">Checking...</div>
+      </div>
+      <div id="sync-progress" class="progress hidden">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <div class="progress-footer">
+          <span class="progress-text" id="progress-text">Starting…</span>
+          <span class="progress-count" id="progress-count"></span>
+        </div>
+        <ul class="progress-files hidden" id="progress-files"></ul>
+        <button
+          id="btn-cancel-sync"
+          class="btn cancel"
+          title="Stop the sync after the current batch. Files already uploaded stay in the notebook."
+        >
+          Cancel upload
+        </button>
+      </div>
+      <div class="btn-group">
+        <button id="btn-sync" class="btn primary" disabled>
+          Sync to NotebookLM
+        </button>
+        <button
+          id="btn-check-notebook"
+          class="btn secondary"
+          title="Check the open notebook and clear the green check from any source you removed there, so it can be re-uploaded. It may take a minute or so — press the button a couple of times and check back later."
+          disabled
+        >
+          Check notebook
+        </button>
+        <button
+          id="btn-reset-sync"
+          class="btn secondary"
+          title="Clear ALL upload markers for this collection (forces a full re-sync). Use 'Check notebook' instead to only clear sources you removed."
+          disabled
+        >
+          Reset
+        </button>
+      </div>
+      <div id="sync-result" class="result hidden"></div>
+    </section>
 
-  <!-- Tab: Mappings -->
-  <section id="tab-mappings" class="tab-content">
-    <p class="tab-description">View and manage links between Zotero collections and NotebookLM notebooks.</p>
-    <div id="mappings-list" class="mappings-list">
-      <p class="empty-state">No mappings yet.</p>
-    </div>
-  </section>
+    <!-- Tab: Backward Sync (Import) -->
+    <section id="tab-import" class="tab-content">
+      <div class="prereq-banner" id="prereq-banner-import">
+        <button
+          class="prereq-toggle"
+          id="prereq-toggle-import"
+          title="Collapse"
+        >
+          &#x25BC;
+        </button>
+        <span class="prereq-label">Using NZBridge</span>
+        <div class="prereq-body" id="prereq-body-import">
+          <ol class="prereq-list">
+            <li>Open NotebookLM and enter the target notebook page.</li>
+            <li>Make sure the NotebookLM Studio panel is available.</li>
+            <li>Select the Zotero library and target collection.</li>
+            <li>
+              Click Find Text Notes, then import the selected notes.
+              Multilingual NotebookLM interfaces are supported.
+            </li>
+          </ol>
+        </div>
+      </div>
+      <p class="tab-description">
+        Extract saved notes from NotebookLM and import them into a Zotero
+        collection.
+      </p>
+      <div class="field">
+        <label for="import-library-select">Library</label>
+        <select id="import-library-select">
+          <option value="">Loading...</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="import-collection-select">Target Zotero Collection</label>
+        <div class="searchable-select" data-for="import-collection-select">
+          <input
+            type="text"
+            class="searchable-input"
+            placeholder="Select a collection..."
+            autocomplete="off"
+          />
+          <div class="searchable-list hidden"></div>
+        </div>
+        <select id="import-collection-select" class="searchable-hidden">
+          <option value="">Select a collection...</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="custom-tags">Custom Tags (comma-separated)</label>
+        <input
+          type="text"
+          id="custom-tags"
+          placeholder="e.g. review, project-x"
+        />
+      </div>
+      <div id="found-notes" class="notes-list hidden">
+        <div class="notes-header">
+          <label>Found Notes:</label>
+          <label class="select-all-label">
+            <input type="checkbox" id="select-all" checked />
+            Select all
+          </label>
+        </div>
+        <div id="notes-cache-hint" class="cache-hint hidden"></div>
+        <div id="notes-container"></div>
+      </div>
+      <div class="btn-group">
+        <button id="btn-extract" class="btn secondary">Find Text Notes</button>
+        <button id="btn-import" class="btn primary" disabled>
+          Import Selected
+        </button>
+      </div>
+      <div id="import-result" class="result hidden"></div>
+    </section>
 
-  <!-- Tab: Updates -->
-  <section id="tab-updates" class="tab-content">
-    <p class="tab-description">Latest releases and upcoming features.</p>
+    <!-- Tab: Mappings -->
+    <section id="tab-mappings" class="tab-content">
+      <p class="tab-description">
+        View and manage links between Zotero collections and NotebookLM
+        notebooks.
+      </p>
+      <div id="mappings-list" class="mappings-list">
+        <p class="empty-state">No mappings yet.</p>
+      </div>
+    </section>
 
-    <div class="update-section">
-      <h3 class="update-version">v0.4.0 <span class="update-tag current">Current</span></h3>
-      <ul class="update-list">
-        <li>Uploaded sources now show a green check — items already in the connected notebook are marked and skipped, so you only sync what's new</li>
-        <li>"Already uploaded" is tracked reliably per notebook: PDFs by filename and URLs by their source link, so it survives closing/reopening the popup and isn't fooled by renaming a source in NotebookLM</li>
-        <li>New "Check notebook" button: clears the green check from any source you removed in NotebookLM so it can be re-uploaded (may take a minute — click again and check back)</li>
-        <li>Cancel upload: stop a sync in progress; files already uploaded are kept</li>
-        <li>Pin the popup into a floating, movable window that stays open while you work in NotebookLM</li>
-        <li>The To Zotero tab now defaults its target to the collection you picked for syncing (still changeable)</li>
-        <li>Your selected collection is remembered when you reopen the popup</li>
-        <li>Items are unchecked by default so you pick exactly what to upload; refreshed, more even UI in light and dark mode</li>
-      </ul>
-    </div>
+    <!-- Tab: Updates -->
+    <section id="tab-updates" class="tab-content">
+      <p class="tab-description">Latest releases and upcoming features.</p>
 
-    <div class="update-section">
-      <h3 class="update-version">v0.3.3</h3>
-      <ul class="update-list">
-        <li>Fix: "Find Text Notes" reliably finds saved text notes again after NotebookLM's Studio redesign. Notes are detected by structure, not timestamps, and never confused with Studio generators (Slide Deck, Mind Map, etc.)</li>
-        <li>Fix: each note now extracts its own content correctly (no more duplicated text) in both the expanded and collapsed layouts, including read-only saved responses</li>
-        <li>Inline citations become readable markers like (20,21); years and other numbers are left untouched</li>
-        <li>Fix: importing URLs after PDFs now works. The "Websites" option in the Add sources dialog is found reliably</li>
-        <li>Found notes are remembered per notebook. Close and reopen the popup without losing them, then re-run to refresh</li>
-        <li>Searchable collection pickers: start typing to filter your Zotero collections</li>
-        <li>Dark mode (default) with a toggle in the top-right, plus faster note extraction</li>
-      </ul>
-    </div>
+      <div class="update-section">
+        <h3 class="update-version">
+          v0.4.1 <span class="update-tag current">Current</span>
+        </h3>
+        <ul class="update-list">
+          <li>
+            New "Search by" toggle on the To NotebookLM tab: choose between
+            Zotero collections and Zotero tags
+          </li>
+          <li>
+            Tag-based sync finds all items with a selected tag across the chosen
+            library and uploads them to NotebookLM
+          </li>
+          <li>
+            Tag selections are remembered when you close and reopen the popup,
+            just like collection selections
+          </li>
+          <li>
+            Collections remain the default search mode; tags are an opt-in
+            alternative
+          </li>
+          <li>
+            "Check notebook" and "Reset" work for both collection-based and
+            tag-based syncs
+          </li>
+        </ul>
+      </div>
 
-    <div class="update-section">
-      <h3 class="update-version">v0.3.2</h3>
-      <ul class="update-list">
-        <li>Fix: connection to Zotero now works on Chrome/Edge 142+ — if the browser blocks it, the popup shows how to enable "Local network access"</li>
-        <li>Fix: requests no longer hang for minutes when the local connection is blocked; they fail fast with clear guidance</li>
-        <li>Faster PDF uploads — files upload in batches and each is verified in NotebookLM before continuing, so syncs are quicker while still ensuring every file lands</li>
-      </ul>
-    </div>
+      <div class="update-section">
+        <h3 class="update-version">v0.4.0</h3>
+        <ul class="update-list">
+          <li>
+            Uploaded sources now show a green check — items already in the
+            connected notebook are marked and skipped, so you only sync what's
+            new
+          </li>
+          <li>
+            "Already uploaded" is tracked reliably per notebook: PDFs by
+            filename and URLs by their source link, so it survives
+            closing/reopening the popup and isn't fooled by renaming a source in
+            NotebookLM
+          </li>
+          <li>
+            New "Check notebook" button: clears the green check from any source
+            you removed in NotebookLM so it can be re-uploaded (may take a
+            minute — click again and check back)
+          </li>
+          <li>
+            Cancel upload: stop a sync in progress; files already uploaded are
+            kept
+          </li>
+          <li>
+            Pin the popup into a floating, movable window that stays open while
+            you work in NotebookLM
+          </li>
+          <li>
+            The To Zotero tab now defaults its target to the collection you
+            picked for syncing (still changeable)
+          </li>
+          <li>
+            Your selected collection is remembered when you reopen the popup
+          </li>
+          <li>
+            Items are unchecked by default so you pick exactly what to upload;
+            refreshed, more even UI in light and dark mode
+          </li>
+        </ul>
+      </div>
 
-    <div class="update-section">
-      <h3 class="update-version">v0.3.1</h3>
-      <ul class="update-list">
-        <li>Multilingual NotebookLM support — sync now works on non-English NotebookLM interfaces (Chinese, Japanese, Korean, Spanish, French, German, Portuguese, Italian, Dutch, Indonesian, and more)</li>
-        <li>You no longer need to switch NotebookLM to English before syncing</li>
-        <li>Mappings tab shows a just-synced notebook immediately, even before the Zotero mapping list refreshes</li>
-      </ul>
-    </div>
+      <div class="update-section">
+        <h3 class="update-version">v0.3.3</h3>
+        <ul class="update-list">
+          <li>
+            Fix: "Find Text Notes" reliably finds saved text notes again after
+            NotebookLM's Studio redesign. Notes are detected by structure, not
+            timestamps, and never confused with Studio generators (Slide Deck,
+            Mind Map, etc.)
+          </li>
+          <li>
+            Fix: each note now extracts its own content correctly (no more
+            duplicated text) in both the expanded and collapsed layouts,
+            including read-only saved responses
+          </li>
+          <li>
+            Inline citations become readable markers like (20,21); years and
+            other numbers are left untouched
+          </li>
+          <li>
+            Fix: importing URLs after PDFs now works. The "Websites" option in
+            the Add sources dialog is found reliably
+          </li>
+          <li>
+            Found notes are remembered per notebook. Close and reopen the popup
+            without losing them, then re-run to refresh
+          </li>
+          <li>
+            Searchable collection pickers: start typing to filter your Zotero
+            collections
+          </li>
+          <li>
+            Dark mode (default) with a toggle in the top-right, plus faster note
+            extraction
+          </li>
+        </ul>
+      </div>
 
-    <div class="update-section">
-      <h3 class="update-version">v0.3.0</h3>
-      <ul class="update-list">
-        <li>Group library support — sync items from any Zotero group (private, public-closed, or public-open) to NotebookLM</li>
-        <li>New Library dropdown: pick which library to browse before choosing a collection</li>
-        <li>Mappings tab now shows which library each sync belongs to</li>
-      </ul>
-    </div>
+      <div class="update-section">
+        <h3 class="update-version">v0.3.2</h3>
+        <ul class="update-list">
+          <li>
+            Fix: connection to Zotero now works on Chrome/Edge 142+ — if the
+            browser blocks it, the popup shows how to enable "Local network
+            access"
+          </li>
+          <li>
+            Fix: requests no longer hang for minutes when the local connection
+            is blocked; they fail fast with clear guidance
+          </li>
+          <li>
+            Faster PDF uploads — files upload in batches and each is verified in
+            NotebookLM before continuing, so syncs are quicker while still
+            ensuring every file lands
+          </li>
+        </ul>
+      </div>
 
-    <div class="update-section">
-      <h3 class="update-version">v0.2.1</h3>
-      <ul class="update-list">
-        <li>Fix: PDF uploads no longer silently drop files when syncing large collections — all PDFs now upload reliably</li>
-        <li>Up to 3 automatic retries per file with backoff if the upload dialog doesn't respond in time</li>
-        <li>Better error messages — shows exactly which PDFs failed and how many, instead of truncating to 3 errors</li>
-        <li>Note: upload time per file may be slightly longer than v0.2.0 to ensure reliability. Actual time depends on PDF size, your internet connection speed, and NotebookLM's response time</li>
-      </ul>
-    </div>
+      <div class="update-section">
+        <h3 class="update-version">v0.3.1</h3>
+        <ul class="update-list">
+          <li>
+            Multilingual NotebookLM support — sync now works on non-English
+            NotebookLM interfaces (Chinese, Japanese, Korean, Spanish, French,
+            German, Portuguese, Italian, Dutch, Indonesian, and more)
+          </li>
+          <li>
+            You no longer need to switch NotebookLM to English before syncing
+          </li>
+          <li>
+            Mappings tab shows a just-synced notebook immediately, even before
+            the Zotero mapping list refreshes
+          </li>
+        </ul>
+      </div>
 
-    <div class="update-section">
-      <h3 class="update-version">v0.2.0</h3>
-      <ul class="update-list">
-        <li>Selective sync — choose exactly which PDFs and URLs to upload before syncing</li>
-        <li>Real-time progress bar with per-file status and item counter</li>
-        <li>Progress is preserved if the popup is closed and reopened mid-sync</li>
-        <li>Faster PDF uploads — ~3-5s per file (down from ~10-15s)</li>
-        <li>Fixed: PDFs no longer open as new browser tabs instead of uploading</li>
-      </ul>
-    </div>
+      <div class="update-section">
+        <h3 class="update-version">v0.3.0</h3>
+        <ul class="update-list">
+          <li>
+            Group library support — sync items from any Zotero group (private,
+            public-closed, or public-open) to NotebookLM
+          </li>
+          <li>
+            New Library dropdown: pick which library to browse before choosing a
+            collection
+          </li>
+          <li>Mappings tab now shows which library each sync belongs to</li>
+        </ul>
+      </div>
 
-    <div class="update-section">
-      <h3 class="update-version">v0.1.3</h3>
-      <ul class="update-list">
-        <li>The 50-source limit is now a warning, not a blocker — Pro plan users can sync collections larger than 50 items</li>
-      </ul>
-    </div>
+      <div class="update-section">
+        <h3 class="update-version">v0.2.1</h3>
+        <ul class="update-list">
+          <li>
+            Fix: PDF uploads no longer silently drop files when syncing large
+            collections — all PDFs now upload reliably
+          </li>
+          <li>
+            Up to 3 automatic retries per file with backoff if the upload dialog
+            doesn't respond in time
+          </li>
+          <li>
+            Better error messages — shows exactly which PDFs failed and how
+            many, instead of truncating to 3 errors
+          </li>
+          <li>
+            Note: upload time per file may be slightly longer than v0.2.0 to
+            ensure reliability. Actual time depends on PDF size, your internet
+            connection speed, and NotebookLM's response time
+          </li>
+        </ul>
+      </div>
 
-    <div class="update-section">
-      <h3 class="update-version">v0.1.2</h3>
-      <ul class="update-list">
-        <li>Fix: correct NotebookLM tab targeting when multiple notebook tabs are open</li>
-        <li>Fix: "Add sources" failures caused by syncing into the wrong tab</li>
-        <li>Fix: file-chooser interception now always cleaned up on error (restores manual uploads)</li>
-        <li>Fix: PDF uploads on macOS and Linux (path separator handling)</li>
-        <li>Fix: clearer errors when Zotero is not running or the plugin is unavailable</li>
-        <li>Fix: popup no longer hangs forever if the background worker is slow</li>
-        <li>Guard: prevents two syncs from running simultaneously on the same tab</li>
-        <li>Backward sync prefers the originally mapped notebook when multiple are open</li>
-      </ul>
-    </div>
+      <div class="update-section">
+        <h3 class="update-version">v0.2.0</h3>
+        <ul class="update-list">
+          <li>
+            Selective sync — choose exactly which PDFs and URLs to upload before
+            syncing
+          </li>
+          <li>Real-time progress bar with per-file status and item counter</li>
+          <li>
+            Progress is preserved if the popup is closed and reopened mid-sync
+          </li>
+          <li>Faster PDF uploads — ~3-5s per file (down from ~10-15s)</li>
+          <li>
+            Fixed: PDFs no longer open as new browser tabs instead of uploading
+          </li>
+        </ul>
+      </div>
 
-    <div class="update-section">
-      <h3 class="update-version">v0.1.0</h3>
-      <ul class="update-list">
-        <li>Forward sync: upload PDFs and URLs from Zotero to NotebookLM</li>
-        <li>Backward sync: extract text notes from NotebookLM Studio</li>
-        <li>Smart URL selection (prefers open-access over bot-protected links)</li>
-        <li>Auto-naming of new notebooks after Zotero collections</li>
-        <li>Parent document items for Notion/Notero compatibility</li>
-        <li>Custom tags and default tags on imported notes</li>
-        <li>Collapsed/vertical layout support</li>
-        <li>Duplicate detection and overwrite on re-import</li>
-      </ul>
-    </div>
+      <div class="update-section">
+        <h3 class="update-version">v0.1.3</h3>
+        <ul class="update-list">
+          <li>
+            The 50-source limit is now a warning, not a blocker — Pro plan users
+            can sync collections larger than 50 items
+          </li>
+        </ul>
+      </div>
 
-    <div class="update-section">
-      <h3 class="update-version">Planned <span class="update-tag planned">Upcoming</span></h3>
-      <ul class="update-list">
-        <li>Import audio overview transcripts</li>
-        <li>Import mind maps and other Studio formats</li>
-        <li>Selective source sync (choose which items to push)</li>
-      </ul>
-    </div>
-  </section>
+      <div class="update-section">
+        <h3 class="update-version">v0.1.2</h3>
+        <ul class="update-list">
+          <li>
+            Fix: correct NotebookLM tab targeting when multiple notebook tabs
+            are open
+          </li>
+          <li>
+            Fix: "Add sources" failures caused by syncing into the wrong tab
+          </li>
+          <li>
+            Fix: file-chooser interception now always cleaned up on error
+            (restores manual uploads)
+          </li>
+          <li>Fix: PDF uploads on macOS and Linux (path separator handling)</li>
+          <li>
+            Fix: clearer errors when Zotero is not running or the plugin is
+            unavailable
+          </li>
+          <li>
+            Fix: popup no longer hangs forever if the background worker is slow
+          </li>
+          <li>
+            Guard: prevents two syncs from running simultaneously on the same
+            tab
+          </li>
+          <li>
+            Backward sync prefers the originally mapped notebook when multiple
+            are open
+          </li>
+        </ul>
+      </div>
 
-  <!-- Support -->
-  <footer class="support-footer">
-    <p class="support-cta">The continued development of NZBridge depends on your support. If it saves you time, please consider leaving a review or buying me a coffee. It truly helps! 😊</p>
-    <a href="https://buymeacoffee.com/rafaeloliveira" target="_blank" class="bmc-link">
-      <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="28" />
-    </a>
-  </footer>
+      <div class="update-section">
+        <h3 class="update-version">v0.1.0</h3>
+        <ul class="update-list">
+          <li>Forward sync: upload PDFs and URLs from Zotero to NotebookLM</li>
+          <li>Backward sync: extract text notes from NotebookLM Studio</li>
+          <li>
+            Smart URL selection (prefers open-access over bot-protected links)
+          </li>
+          <li>Auto-naming of new notebooks after Zotero collections</li>
+          <li>Parent document items for Notion/Notero compatibility</li>
+          <li>Custom tags and default tags on imported notes</li>
+          <li>Collapsed/vertical layout support</li>
+          <li>Duplicate detection and overwrite on re-import</li>
+        </ul>
+      </div>
 
-  <script src="popup.js"></script>
-</body>
+      <div class="update-section">
+        <h3 class="update-version">
+          Planned <span class="update-tag planned">Upcoming</span>
+        </h3>
+        <ul class="update-list">
+          <li>Import audio overview transcripts</li>
+          <li>Import mind maps and other Studio formats</li>
+          <li>Selective source sync (choose which items to push)</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Support -->
+    <footer class="support-footer">
+      <p class="support-cta">
+        The continued development of NZBridge depends on your support. If it
+        saves you time, please consider leaving a review or buying me a coffee.
+        It truly helps! 😊
+      </p>
+      <a
+        href="https://buymeacoffee.com/rafaeloliveira"
+        target="_blank"
+        class="bmc-link"
+      >
+        <img
+          src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png"
+          alt="Buy Me A Coffee"
+          height="28"
+        />
+      </a>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
 </html>

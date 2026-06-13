@@ -33,10 +33,10 @@ const AMBIGUOUS_TAB_ERROR =
 // processing it (source count grows and the spinner clears) before opening the
 // next dialog. We never re-drop a batch — re-dropping while the first upload is
 // still in flight is what caused duplicate sources.
-const FILE_BATCH_SIZE = 4;            // files per dialog open/drop/close cycle
-const SETTLE_TIMEOUT_MS = 45000;     // max wait for a batch to finish processing
-const SETTLE_POLL_MS = 500;          // poll cadence while waiting to settle
-const SETTLE_QUIET_MS = 1200;        // require the count stable + not busy this long
+const FILE_BATCH_SIZE = 4; // files per dialog open/drop/close cycle
+const SETTLE_TIMEOUT_MS = 45000; // max wait for a batch to finish processing
+const SETTLE_POLL_MS = 500; // poll cadence while waiting to settle
+const SETTLE_QUIET_MS = 1200; // require the count stable + not busy this long
 const SETTLE_FALLBACK_SLEEP_MS = 4000; // used only when the panel is unreadable
 
 // ─── Zotero API helpers ──────────────────────────────────────────────
@@ -48,8 +48,8 @@ const SETTLE_FALLBACK_SLEEP_MS = 4000; // used only when the panel is unreadable
 // fetch fails/hangs. We surface this guidance whenever a connection can't be
 // established so the user (or IT) knows the exact toggle to flip.
 const LNA_HINT =
-  'If Zotero is running, Chrome/Edge may be blocking the local connection. ' +
-  'Open chrome://extensions → NZBridge → Details → Site settings, and set ' +
+  "If Zotero is running, Chrome/Edge may be blocking the local connection. " +
+  "Open chrome://extensions → NZBridge → Details → Site settings, and set " +
   '"Local network access" to Allow, then try again. (Edge: edge://extensions)';
 
 // Default timeout for normal API calls. Short so connection/collection checks
@@ -59,7 +59,11 @@ const ZOTERO_TIMEOUT_MS = 8000;
 // a much longer budget.
 const ZOTERO_FILE_TIMEOUT_MS = 60000;
 
-async function zoteroRequest(path, body = null, { timeoutMs = ZOTERO_TIMEOUT_MS } = {}) {
+async function zoteroRequest(
+  path,
+  body = null,
+  { timeoutMs = ZOTERO_TIMEOUT_MS } = {},
+) {
   const options = {
     method: body ? "POST" : "GET",
     headers: {
@@ -82,7 +86,7 @@ async function zoteroRequest(path, body = null, { timeoutMs = ZOTERO_TIMEOUT_MS 
     const err = new Error(
       (timedOut
         ? "Connection to Zotero timed out. "
-        : "Could not reach Zotero on localhost:23119. ") + LNA_HINT
+        : "Could not reach Zotero on localhost:23119. ") + LNA_HINT,
     );
     err.code = timedOut ? "timeout" : "blocked-or-down";
     throw err;
@@ -94,7 +98,7 @@ async function zoteroRequest(path, body = null, { timeoutMs = ZOTERO_TIMEOUT_MS 
     return await res.json();
   } catch {
     throw new Error(
-      "Zotero returned a non-JSON response (plugin may have crashed)."
+      "Zotero returned a non-JSON response (plugin may have crashed).",
     );
   }
 }
@@ -116,12 +120,26 @@ async function getCollections(libraryId) {
   return zoteroRequest("/n2z/collections", { libraryId });
 }
 
-async function getExportableItems(collectionId) {
+async function getTags(libraryId) {
+  console.log(`[n2z] getTags(libraryId=${libraryId})`);
+  const result = await zoteroRequest("/n2z/tags", { libraryId });
+  console.log(`[n2z] getTags result:`, result);
+  return result;
+}
+
+async function getExportableItems({ collectionId, libraryId, tag } = {}) {
+  if (tag != null && libraryId != null) {
+    return zoteroRequest("/n2z/list", { libraryId, tag });
+  }
   return zoteroRequest("/n2z/list", { collectionId });
 }
 
 async function getFile(attachmentId) {
-  return zoteroRequest("/n2z/file", { attachmentId }, { timeoutMs: ZOTERO_FILE_TIMEOUT_MS });
+  return zoteroRequest(
+    "/n2z/file",
+    { attachmentId },
+    { timeoutMs: ZOTERO_FILE_TIMEOUT_MS },
+  );
 }
 
 async function getMappings() {
@@ -168,7 +186,7 @@ async function resolveNotebookLMTab(preferredNotebookId = null) {
 
   if (preferredNotebookId) {
     const match = allNotebookLMTabs.find((t) =>
-      t.url?.includes(`/notebook/${preferredNotebookId}`)
+      t.url?.includes(`/notebook/${preferredNotebookId}`),
     );
     if (match) return { tab: match, reason: "preferred" };
   }
@@ -204,7 +222,14 @@ function notesCacheKey(notebookId) {
  * so the popup can display what will be synced. Actual injection
  * happens per-item via addUrlSource or file injection.
  */
-async function forwardSync(collectionId, collectionName, selectedItemKeys, libraryId, libraryName) {
+async function forwardSync(
+  collectionId,
+  collectionName,
+  selectedItemKeys,
+  libraryId,
+  libraryName,
+  tag,
+) {
   // 1. Resolve which NotebookLM tab to target
   const { tab, reason } = await resolveNotebookLMTab();
   if (!tab) {
@@ -235,33 +260,66 @@ async function forwardSync(collectionId, collectionName, selectedItemKeys, libra
   activeSyncs.add(tab.id);
 
   // Reset progress state for this tab
-  syncProgress.set(tab.id, { phase: "starting", current: 0, total: 0, currentTitle: "", done: false, result: null });
+  syncProgress.set(tab.id, {
+    phase: "starting",
+    current: 0,
+    total: 0,
+    currentTitle: "",
+    done: false,
+    result: null,
+  });
 
   // Run the sync in the background — do NOT await it here.
   // The popup polls for progress via n2z-sync-status.
-  forwardSyncImpl(tab, notebookId, collectionId, collectionName, selectedItemKeys, libraryId, libraryName)
+  forwardSyncImpl(
+    tab,
+    notebookId,
+    collectionId,
+    collectionName,
+    selectedItemKeys,
+    libraryId,
+    libraryName,
+    tag,
+  )
     .then((result) => {
       // Release the sync lock BEFORE broadcasting "done" so the popup's
       // post-sync re-render can reconcile against the tab (the reconcile
       // handler refuses to run while the tab is still in activeSyncs).
       activeSyncs.delete(tab.id);
       cancelledSyncs.delete(tab.id);
-      syncProgress.set(tab.id, { ...syncProgress.get(tab.id), done: true, result });
+      syncProgress.set(tab.id, {
+        ...syncProgress.get(tab.id),
+        done: true,
+        result,
+      });
       broadcastProgress({ tabId: tab.id, done: true, result });
     })
     .catch((e) => {
       activeSyncs.delete(tab.id);
       cancelledSyncs.delete(tab.id);
       const result = { success: false, error: e.message };
-      syncProgress.set(tab.id, { ...syncProgress.get(tab.id), done: true, result });
+      syncProgress.set(tab.id, {
+        ...syncProgress.get(tab.id),
+        done: true,
+        result,
+      });
       broadcastProgress({ tabId: tab.id, done: true, result });
     });
 
   return { success: true, started: true, tabId: tab.id };
 }
 
-async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, selectedItemKeys, libraryId, libraryName) {
-  // 1b. Set notebook title to the collection name (user can change it later)
+async function forwardSyncImpl(
+  tab,
+  notebookId,
+  collectionId,
+  collectionName,
+  selectedItemKeys,
+  libraryId,
+  libraryName,
+  tag,
+) {
+  // 1b. Set notebook title to the collection/tag name (user can change it later)
   if (collectionName) {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -270,7 +328,7 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
         // NotebookLM's notebook title is typically an editable input/textarea
         // at the top of the page, or a contenteditable heading
         const candidates = document.querySelectorAll(
-          'input, textarea, [contenteditable="true"], [contenteditable=""]'
+          'input, textarea, [contenteditable="true"], [contenteditable=""]',
         );
         for (const el of candidates) {
           const rect = el.getBoundingClientRect();
@@ -280,10 +338,22 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
           if (tag === "input" || tag === "textarea") {
             // Only set if it's a default/untitled notebook name
             const val = el.value || "";
-            if (!val || /^untitled/i.test(val) || /^new notebook/i.test(val) || val.length < 3) {
-              const setter = tag === "textarea"
-                ? Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set
-                : Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+            if (
+              !val ||
+              /^untitled/i.test(val) ||
+              /^new notebook/i.test(val) ||
+              val.length < 3
+            ) {
+              const setter =
+                tag === "textarea"
+                  ? Object.getOwnPropertyDescriptor(
+                      window.HTMLTextAreaElement.prototype,
+                      "value",
+                    )?.set
+                  : Object.getOwnPropertyDescriptor(
+                      window.HTMLInputElement.prototype,
+                      "value",
+                    )?.set;
               if (setter) setter.call(el, name);
               else el.value = name;
               el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -291,17 +361,30 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
               el.dispatchEvent(new Event("blur", { bubbles: true }));
               return { success: true, method: "input" };
             }
-            return { success: false, reason: "notebook-already-named", current: val };
+            return {
+              success: false,
+              reason: "notebook-already-named",
+              current: val,
+            };
           }
           if (el.getAttribute("contenteditable") !== null) {
             const text = el.textContent?.trim() || "";
-            if (!text || /^untitled/i.test(text) || /^new notebook/i.test(text) || text.length < 3) {
+            if (
+              !text ||
+              /^untitled/i.test(text) ||
+              /^new notebook/i.test(text) ||
+              text.length < 3
+            ) {
               el.textContent = name;
               el.dispatchEvent(new Event("input", { bubbles: true }));
               el.dispatchEvent(new Event("blur", { bubbles: true }));
               return { success: true, method: "contenteditable" };
             }
-            return { success: false, reason: "notebook-already-named", current: text };
+            return {
+              success: false,
+              reason: "notebook-already-named",
+              current: text,
+            };
           }
         }
         return { success: false, reason: "no-title-field-found" };
@@ -318,14 +401,19 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
         if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
         const tag = el.tagName?.toLowerCase() || "";
         const cls = (el.className || "").toString().toLowerCase();
-        return tag === "mat-icon" || cls.includes("material-icons") || cls.includes("mat-icon");
+        return (
+          tag === "mat-icon" ||
+          cls.includes("material-icons") ||
+          cls.includes("mat-icon")
+        );
       };
       const getCleanText = (node) => {
         let result = "";
         for (const child of node.childNodes) {
           if (child.nodeType === Node.TEXT_NODE) result += child.textContent;
           else if (child.nodeType === Node.ELEMENT_NODE) {
-            if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
+            if (child.tagName === "STYLE" || child.tagName === "SCRIPT")
+              continue;
             if (isIconElement(child)) continue;
             result += getCleanText(child);
           }
@@ -333,11 +421,24 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
         return result;
       };
       const clickables = document.querySelectorAll(
-        '[role="tab"], button, [role="button"], a, [class*="tab"]'
+        '[role="tab"], button, [role="button"], a, [class*="tab"]',
       );
       const sourceTabLabels = [
-        "sources", "source", "来源", "來源", "ソース", "情報源", "소스", "출처",
-        "fuentes", "sources", "quellen", "fontes", "fonti", "bronnen", "sumber",
+        "sources",
+        "source",
+        "来源",
+        "來源",
+        "ソース",
+        "情報源",
+        "소스",
+        "출처",
+        "fuentes",
+        "sources",
+        "quellen",
+        "fontes",
+        "fonti",
+        "bronnen",
+        "sumber",
       ];
       for (const el of clickables) {
         const text = getCleanText(el).trim().toLowerCase();
@@ -351,8 +452,10 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
   });
   await sleep(1000);
 
-  // 2. Get exportable items from Zotero
-  const itemsRes = await getExportableItems(collectionId);
+  // 2. Get exportable items from Zotero (by collection or by tag across a library)
+  const itemsRes = tag
+    ? await getExportableItems({ libraryId, tag })
+    : await getExportableItems({ collectionId });
   if (!itemsRes.success) {
     return {
       success: false,
@@ -380,15 +483,28 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
   const syncState = await chrome.storage.local.get(syncKey);
   let syncedHashes = { ...(syncState[syncKey] || {}) };
   try {
-    const existingMapping = await zoteroRequest("/n2z/mapping", { action: "get", collectionId });
-    if (existingMapping?.success && existingMapping.data?.notebookId === notebookId) {
-      syncedHashes = { ...(existingMapping.data.syncedItemHashes || {}), ...syncedHashes };
+    const existingMapping = await zoteroRequest("/n2z/mapping", {
+      action: "get",
+      collectionId,
+    });
+    if (
+      existingMapping?.success &&
+      existingMapping.data?.notebookId === notebookId
+    ) {
+      syncedHashes = {
+        ...(existingMapping.data.syncedItemHashes || {}),
+        ...syncedHashes,
+      };
     }
-  } catch { /* mapping fetch is best-effort; fall back to local cache */ }
+  } catch {
+    /* mapping fetch is best-effort; fall back to local cache */
+  }
 
   const selectedSet = selectedItemKeys ? new Set(selectedItemKeys) : null;
   const newItems = items.filter(
-    (item) => !syncedHashes[item.itemKey] && (!selectedSet || selectedSet.has(item.itemKey))
+    (item) =>
+      !syncedHashes[item.itemKey] &&
+      (!selectedSet || selectedSet.has(item.itemKey)),
   );
 
   if (newItems.length === 0) {
@@ -422,7 +538,15 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
   let doneCount = 0;
 
   const emitProgress = (phase, currentTitle, files) => {
-    const state = { phase, current: doneCount, total: totalItems, currentTitle: currentTitle || "", files: files || null, done: false, result: null };
+    const state = {
+      phase,
+      current: doneCount,
+      total: totalItems,
+      currentTitle: currentTitle || "",
+      files: files || null,
+      done: false,
+      result: null,
+    };
     syncProgress.set(tab.id, state);
     broadcastProgress({ tabId: tab.id, ...state });
   };
@@ -430,7 +554,10 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
   // 5a. Add ALL URL sources at once (NotebookLM supports multiple URLs
   // separated by newlines in a single paste)
   if (urlItems.length > 0) {
-    emitProgress("urls", `Adding ${urlItems.length} URL${urlItems.length > 1 ? "s" : ""}...`);
+    emitProgress(
+      "urls",
+      `Adding ${urlItems.length} URL${urlItems.length > 1 ? "s" : ""}...`,
+    );
     try {
       const urls = urlItems.map((i) => i.url);
       const result = await addUrlSourcesBatch(tab.id, urls);
@@ -439,7 +566,9 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
       // Build detailed error from step info
       let errorDetail = result.error || "";
       if (!confirmed && result.steps) {
-        const failedStep = Object.entries(result.steps).find(([, v]) => !v?.success);
+        const failedStep = Object.entries(result.steps).find(
+          ([, v]) => !v?.success,
+        );
         if (failedStep) {
           errorDetail = `Step ${failedStep[0]}: ${failedStep[1]?.error || "failed"}`;
         }
@@ -493,7 +622,12 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
       debuggerAttached = true;
     } catch (e) {
       for (const item of fileItems) {
-        allResults.push({ title: item.title, success: false, error: `Debugger failed: ${e.message}`, type: "file" });
+        allResults.push({
+          title: item.title,
+          success: false,
+          error: `Debugger failed: ${e.message}`,
+          type: "file",
+        });
         doneCount++;
       }
     }
@@ -509,12 +643,22 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
           } catch (e) {
             // Connection/LNA failure or timeout — e.message carries the
             // chrome://extensions guidance. Record per-item and keep going.
-            allResults.push({ title: item.title, success: false, error: e.message, type: "file" });
+            allResults.push({
+              title: item.title,
+              success: false,
+              error: e.message,
+              type: "file",
+            });
             doneCount++;
             continue;
           }
           if (!fileRes.success || !fileRes.data) {
-            allResults.push({ title: item.title, success: false, error: "Could not fetch file from Zotero", type: "file" });
+            allResults.push({
+              title: item.title,
+              success: false,
+              error: "Could not fetch file from Zotero",
+              type: "file",
+            });
             doneCount++;
           } else {
             resolvedFiles.push({ item, fileData: fileRes.data });
@@ -533,7 +677,13 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
           // their markers; remaining ones are recorded as cancelled.
           if (cancelledSyncs.has(tab.id)) {
             for (let j = bi; j < resolvedFiles.length; j++) {
-              allResults.push({ title: resolvedFiles[j].item.title, success: false, error: "Cancelled", type: "file", __itemKey: resolvedFiles[j].item.itemKey });
+              allResults.push({
+                title: resolvedFiles[j].item.title,
+                success: false,
+                error: "Cancelled",
+                type: "file",
+                __itemKey: resolvedFiles[j].item.itemKey,
+              });
             }
             break;
           }
@@ -549,9 +699,10 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
 
           // Show every file in this batch as a bulleted list in the popup.
           const batchTitles = batch.map((p) => p.item.title);
-          const batchLabel = batch.length > 1
-            ? `Uploading ${batch.length} files`
-            : "Uploading 1 file";
+          const batchLabel =
+            batch.length > 1
+              ? `Uploading ${batch.length} files`
+              : "Uploading 1 file";
           emitProgress("files", batchLabel, batchTitles);
 
           const res = await injectFilesBatchViaCDP(tab.id, batchFileData);
@@ -575,7 +726,10 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
               const reached = st.count != null && st.count >= target;
               if (reached) {
                 reachedSince = reachedSince ?? Date.now();
-                if (Date.now() - reachedSince >= SETTLE_QUIET_MS) { landed = true; break; }
+                if (Date.now() - reachedSince >= SETTLE_QUIET_MS) {
+                  landed = true;
+                  break;
+                }
               } else {
                 reachedSince = null;
               }
@@ -589,25 +743,40 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
           // mark synced on a partial — better to re-sync the whole batch later
           // (a re-sync only re-adds items NOT in syncedHashes) than to falsely
           // skip a missing file.
-          const fullTarget = before.count != null ? before.count + batch.length : null;
+          const fullTarget =
+            before.count != null ? before.count + batch.length : null;
           const ok =
             (before.count == null && landed) ||
-            (fullTarget != null && after.count != null && after.count >= fullTarget);
+            (fullTarget != null &&
+              after.count != null &&
+              after.count >= fullTarget);
           for (const p of batch) {
-            allResults.push({ title: p.item.title, success: ok, error: ok ? undefined : "Upload not confirmed", type: "file", __itemKey: p.item.itemKey });
+            allResults.push({
+              title: p.item.title,
+              success: ok,
+              error: ok ? undefined : "Upload not confirmed",
+              type: "file",
+              __itemKey: p.item.itemKey,
+            });
             // Provisional marker; the real NotebookLM label is bound after the
             // sync settles (step 6). `name` is a fallback if capture fails.
-            if (ok) syncedHashes[p.item.itemKey] = { at: Date.now(), name: p.fileData.filename || p.item.title || "" };
+            if (ok)
+              syncedHashes[p.item.itemKey] = {
+                at: Date.now(),
+                name: p.fileData.filename || p.item.title || "",
+              };
             doneCount++;
           }
 
           console.log(
             `[n2z] batch@${bi}: dropped ${batch.length}, before=${before.count}, after=${after.count}, ` +
-            `landed=${landed}, busy=${after.busy}, drop=${res.success}, method=${after.method}, ${Date.now() - t0}ms`
+              `landed=${landed}, busy=${after.busy}, drop=${res.success}, method=${after.method}, ${Date.now() - t0}ms`,
           );
         }
       } finally {
-        try { await chrome.debugger.detach({ tabId: tab.id }); } catch {}
+        try {
+          await chrome.debugger.detach({ tabId: tab.id });
+        } catch {}
       }
     }
   }
@@ -639,7 +808,8 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
         if (!marker || typeof marker !== "object") continue;
         const wantUrl = norm(marker.url);
         const hitIdx = remaining.findIndex(
-          (s) => s.faviconDomain && wantUrl && norm(s.faviconDomain) === wantUrl
+          (s) =>
+            s.faviconDomain && wantUrl && norm(s.faviconDomain) === wantUrl,
         );
         if (hitIdx !== -1) {
           marker.label = remaining[hitIdx].label || marker.name;
@@ -659,7 +829,9 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
         if (!marker || typeof marker !== "object") continue;
         const want = String(marker.name || "").trim();
         let hitIdx = want
-          ? fileLeftovers.findIndex((s) => String(s.label || "").trim() === want)
+          ? fileLeftovers.findIndex(
+              (s) => String(s.label || "").trim() === want,
+            )
           : -1;
         if (hitIdx === -1) hitIdx = 0; // positional fallback (upload order)
         const src = fileLeftovers[hitIdx];
@@ -702,7 +874,10 @@ async function forwardSyncImpl(tab, notebookId, collectionId, collectionName, se
     : `Synced ${successCount}/${newItems.length} items (${urlItems.length} URLs, ${fileItems.length} files).`;
   if (failCount > 0 && !wasCancelled) {
     const failed = allResults.filter((r) => !r.success);
-    const titlePreview = failed.slice(0, 5).map((r) => `"${r.title}"`).join(", ");
+    const titlePreview = failed
+      .slice(0, 5)
+      .map((r) => `"${r.title}"`)
+      .join(", ");
     const remaining = failed.length - 5;
     const titleSuffix = remaining > 0 ? `, +${remaining} more` : "";
     message += ` ${failCount} failed: ${titlePreview}${titleSuffix}.`;
@@ -763,7 +938,9 @@ async function addUrlSourcesBatch(tabId, urls) {
   const staleOpen = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      const dlgs = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+      const dlgs = [
+        ...document.querySelectorAll('mat-dialog-container, [role="dialog"]'),
+      ];
       return dlgs.some((d) => {
         const s = window.getComputedStyle(d);
         if (s.display === "none" || s.visibility === "hidden") return false;
@@ -775,7 +952,14 @@ async function addUrlSourcesBatch(tabId, urls) {
   if (staleOpen?.[0]?.result) {
     await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })),
+      func: () =>
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Escape",
+            code: "Escape",
+            bubbles: true,
+          }),
+        ),
     });
     await sleep(600);
   }
@@ -784,24 +968,61 @@ async function addUrlSourcesBatch(tabId, urls) {
   const step1 = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
-      const hasAny = (text, labels) => labels.some((label) => text.includes(label));
+      const getCleanText = (el) => {
+        let t = "";
+        for (const c of el.childNodes) {
+          if (c.nodeType === 3) t += c.textContent;
+          else if (c.nodeType === 1) {
+            const tag = c.tagName?.toLowerCase() || "";
+            const cls = (c.className || "").toString().toLowerCase();
+            if (
+              tag === "mat-icon" ||
+              cls.includes("material-icons") ||
+              cls.includes("mat-icon")
+            )
+              continue;
+            t += getCleanText(c);
+          }
+        }
+        return t.trim();
+      };
+      const hasAny = (text, labels) =>
+        labels.some((label) => text.includes(label));
       const addSourceLabels = [
-        "add source", "add sources", "add a source",
-        "添加来源", "添加源", "新增来源", "加入来源",
-        "添加來源", "新增來源", "加入來源",
-        "ソースを追加", "情報源を追加",
-        "소스 추가", "출처 추가",
-        "añadir fuente", "añadir fuentes", "agregar fuente", "agregar fuentes",
-        "ajouter une source", "ajouter des sources",
-        "quelle hinzufügen", "quellen hinzufügen",
-        "adicionar fonte", "adicionar fontes",
-        "aggiungi fonte", "aggiungi fonti",
-        "bron toevoegen", "bronnen toevoegen",
+        "add source",
+        "add sources",
+        "add a source",
+        "添加来源",
+        "添加源",
+        "新增来源",
+        "加入来源",
+        "添加來源",
+        "新增來源",
+        "加入來源",
+        "ソースを追加",
+        "情報源を追加",
+        "소스 추가",
+        "출처 추가",
+        "añadir fuente",
+        "añadir fuentes",
+        "agregar fuente",
+        "agregar fuentes",
+        "ajouter une source",
+        "ajouter des sources",
+        "quelle hinzufügen",
+        "quellen hinzufügen",
+        "adicionar fonte",
+        "adicionar fontes",
+        "aggiungi fonte",
+        "aggiungi fonti",
+        "bron toevoegen",
+        "bronnen toevoegen",
         "tambahkan sumber",
       ];
 
-      const candidates = document.querySelectorAll('button, [role="button"], a, [tabindex="0"]');
+      const candidates = document.querySelectorAll(
+        'button, [role="button"], a, [tabindex="0"]',
+      );
       for (const el of candidates) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
@@ -813,9 +1034,17 @@ async function addUrlSourcesBatch(tabId, urls) {
         }
       }
       const visible = Array.from(candidates)
-        .filter(e => { const s = window.getComputedStyle(e); return s.display !== "none" && s.visibility !== "hidden"; })
-        .map(e => getCleanText(e)).filter(t => t && t.length < 40).slice(0, 10);
-      return { success: false, error: "No Add sources button found. Visible: " + visible.join(", ") };
+        .filter((e) => {
+          const s = window.getComputedStyle(e);
+          return s.display !== "none" && s.visibility !== "hidden";
+        })
+        .map((e) => getCleanText(e))
+        .filter((t) => t && t.length < 40)
+        .slice(0, 10);
+      return {
+        success: false,
+        error: "No Add sources button found. Visible: " + visible.join(", "),
+      };
     },
   });
   steps.step1 = step1?.[0]?.result;
@@ -830,12 +1059,31 @@ async function addUrlSourcesBatch(tabId, urls) {
   const step2 = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
+      const getCleanText = (el) => {
+        let t = "";
+        for (const c of el.childNodes) {
+          if (c.nodeType === 3) t += c.textContent;
+          else if (c.nodeType === 1) {
+            const tag = c.tagName?.toLowerCase() || "";
+            const cls = (c.className || "").toString().toLowerCase();
+            if (
+              tag === "mat-icon" ||
+              cls.includes("material-icons") ||
+              cls.includes("mat-icon")
+            )
+              continue;
+            t += getCleanText(c);
+          }
+        }
+        return t.trim();
+      };
       // Pick the real, VISIBLE Add-sources dialog. NotebookLM may keep a stray
       // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
       // not grab the first match — choose the largest visible one.
       const dialog = (() => {
-        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const all = [
+          ...document.querySelectorAll('mat-dialog-container, [role="dialog"]'),
+        ];
         const visible = all.filter((d) => {
           const s = window.getComputedStyle(d);
           if (s.display === "none" || s.visibility === "hidden") return false;
@@ -843,48 +1091,124 @@ async function addUrlSourcesBatch(tabId, urls) {
           return r.width > 50 && r.height > 50;
         });
         visible.sort((a, b) => {
-          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          const ra = a.getBoundingClientRect(),
+            rb = b.getBoundingClientRect();
           return rb.width * rb.height - ra.width * ra.height;
         });
         return visible[0] || null;
       })();
-      if (!dialog) return { success: false, error: "Add-sources dialog not open" };
+      if (!dialog)
+        return { success: false, error: "Add-sources dialog not open" };
 
       // The dialog has TWO text areas: a "Search the web" box (always visible)
       // and the URL-paste box that only appears after clicking "Website". Only
       // treat the dialog as ready if a PASTE/LINK/URL field is present — never
       // the search box (else we'd type URLs into web-search).
-      const pasteHints = ["paste", "link", "url", "粘贴", "貼上", "链接", "連結", "网址", "網址", "リンク", "링크", "enlace", "lien", "tautan"];
-      const searchHints = ["search", "搜索", "搜尋", "検索", "검색", "buscar", "rechercher", "suche", "pesquisar", "cerca", "zoek", "cari"];
+      const pasteHints = [
+        "paste",
+        "link",
+        "url",
+        "粘贴",
+        "貼上",
+        "链接",
+        "連結",
+        "网址",
+        "網址",
+        "リンク",
+        "링크",
+        "enlace",
+        "lien",
+        "tautan",
+      ];
+      const searchHints = [
+        "search",
+        "搜索",
+        "搜尋",
+        "検索",
+        "검색",
+        "buscar",
+        "rechercher",
+        "suche",
+        "pesquisar",
+        "cerca",
+        "zoek",
+        "cari",
+      ];
       const fieldLooksLikePaste = (f) => {
-        const ph = ((f.getAttribute("placeholder") || "") + " " + (f.getAttribute("aria-label") || "")).toLowerCase();
+        const ph = (
+          (f.getAttribute("placeholder") || "") +
+          " " +
+          (f.getAttribute("aria-label") || "")
+        ).toLowerCase();
         if (searchHints.some((h) => ph.includes(h))) return false;
         return pasteHints.some((h) => ph.includes(h));
       };
-      const hasPasteField = [...dialog.querySelectorAll("textarea, input[type='text'], input[type='url']")]
-        .some((f) => { const s = window.getComputedStyle(f); return s.display !== "none" && s.visibility !== "hidden" && fieldLooksLikePaste(f); });
-      if (hasPasteField) return { success: true, clicked: "(url paste field already present)", method: "already-open" };
+      const hasPasteField = [
+        ...dialog.querySelectorAll(
+          "textarea, input[type='text'], input[type='url']",
+        ),
+      ].some((f) => {
+        const s = window.getComputedStyle(f);
+        return (
+          s.display !== "none" &&
+          s.visibility !== "hidden" &&
+          fieldLooksLikePaste(f)
+        );
+      });
+      if (hasPasteField)
+        return {
+          success: true,
+          clicked: "(url paste field already present)",
+          method: "already-open",
+        };
 
       const websiteLabels = [
-        "website", "websites", "link", "links", "url", "urls",
-        "网站", "网页", "链接", "網址", "網站", "網頁", "連結",
-        "ウェブサイト", "リンク",
-        "웹사이트", "링크",
-        "sitio web", "sitios web", "enlace",
-        "site web", "sites web", "lien",
-        "webseite", "webseiten",
-        "site", "sites",
-        "sito web", "siti web",
-        "website", "webpagina",
-        "situs web", "tautan",
+        "website",
+        "websites",
+        "link",
+        "links",
+        "url",
+        "urls",
+        "网站",
+        "网页",
+        "链接",
+        "網址",
+        "網站",
+        "網頁",
+        "連結",
+        "ウェブサイト",
+        "リンク",
+        "웹사이트",
+        "링크",
+        "sitio web",
+        "sitios web",
+        "enlace",
+        "site web",
+        "sites web",
+        "lien",
+        "webseite",
+        "webseiten",
+        "site",
+        "sites",
+        "sito web",
+        "siti web",
+        "website",
+        "webpagina",
+        "situs web",
+        "tautan",
       ];
       // Only consider clickables INSIDE the dialog.
-      const clickables = dialog.querySelectorAll('button, [role="button"], [role="menuitem"], [role="option"], [tabindex="0"], a, mat-chip, [class*="chip"]');
+      const clickables = dialog.querySelectorAll(
+        'button, [role="button"], [role="menuitem"], [role="option"], [tabindex="0"], a, mat-chip, [class*="chip"]',
+      );
       for (const el of clickables) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).toLowerCase();
-        if (websiteLabels.includes(clean) && (el.textContent || "").length < 100) {
+        if (
+          websiteLabels.includes(clean) &&
+          (el.textContent || "").length < 100
+        ) {
           el.click();
           return { success: true, clicked: clean, tag: el.tagName };
         }
@@ -894,15 +1218,31 @@ async function addUrlSourcesBatch(tabId, urls) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const raw = (el.textContent || "").trim().toLowerCase();
-        if (raw.length < 100 && websiteLabels.some((label) => raw.includes(label))) {
+        if (
+          raw.length < 100 &&
+          websiteLabels.some((label) => raw.includes(label))
+        ) {
           el.click();
-          return { success: true, clicked: raw.substring(0, 50), tag: el.tagName, method: "contains" };
+          return {
+            success: true,
+            clicked: raw.substring(0, 50),
+            tag: el.tagName,
+            method: "contains",
+          };
         }
       }
       const visible = Array.from(clickables)
-        .filter(e => { const s = window.getComputedStyle(e); return s.display !== "none" && s.visibility !== "hidden"; })
-        .map(e => getCleanText(e)).filter(t => t && t.length < 40).slice(0, 15);
-      return { success: false, error: "No Website option in dialog. Visible: " + visible.join(", ") };
+        .filter((e) => {
+          const s = window.getComputedStyle(e);
+          return s.display !== "none" && s.visibility !== "hidden";
+        })
+        .map((e) => getCleanText(e))
+        .filter((t) => t && t.length < 40)
+        .slice(0, 15);
+      return {
+        success: false,
+        error: "No Website option in dialog. Visible: " + visible.join(", "),
+      };
     },
   });
   steps.step2 = step2?.[0]?.result;
@@ -919,17 +1259,35 @@ async function addUrlSourcesBatch(tabId, urls) {
     args: [urlsText],
     func: (urlsText) => {
       const urlFieldLabels = [
-        "paste", "link", "url",
-        "粘贴", "貼上", "链接", "連結", "网址", "網址",
-        "貼り付け", "リンク", "url",
-        "붙여넣", "링크",
-        "pegar", "enlace", "url",
-        "coller", "lien",
-        "einfügen", "link",
-        "colar", "link",
-        "incolla", "link",
-        "plakken", "link",
-        "tempel", "tautan",
+        "paste",
+        "link",
+        "url",
+        "粘贴",
+        "貼上",
+        "链接",
+        "連結",
+        "网址",
+        "網址",
+        "貼り付け",
+        "リンク",
+        "url",
+        "붙여넣",
+        "링크",
+        "pegar",
+        "enlace",
+        "url",
+        "coller",
+        "lien",
+        "einfügen",
+        "link",
+        "colar",
+        "link",
+        "incolla",
+        "link",
+        "plakken",
+        "link",
+        "tempel",
+        "tautan",
       ];
       // Scope to the Add-sources dialog so we never type into the left-side
       // "Search the web" box (which has its own textarea).
@@ -937,7 +1295,9 @@ async function addUrlSourcesBatch(tabId, urls) {
       // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
       // not grab the first match — choose the largest visible one.
       const dialog = (() => {
-        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const all = [
+          ...document.querySelectorAll('mat-dialog-container, [role="dialog"]'),
+        ];
         const visible = all.filter((d) => {
           const s = window.getComputedStyle(d);
           if (s.display === "none" || s.visibility === "hidden") return false;
@@ -945,25 +1305,59 @@ async function addUrlSourcesBatch(tabId, urls) {
           return r.width > 50 && r.height > 50;
         });
         visible.sort((a, b) => {
-          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          const ra = a.getBoundingClientRect(),
+            rb = b.getBoundingClientRect();
           return rb.width * rb.height - ra.width * ra.height;
         });
         return visible[0] || null;
       })();
-      if (!dialog) return { success: false, error: "Add-sources dialog not open (URL field step)" };
+      if (!dialog)
+        return {
+          success: false,
+          error: "Add-sources dialog not open (URL field step)",
+        };
 
-      const searchHints = ["search", "搜索", "搜尋", "検索", "검색", "buscar", "rechercher", "suche", "pesquisar", "cerca", "zoek", "cari"];
-      const fieldMeta = (f) => ((f.getAttribute("placeholder") || "") + " " + (f.getAttribute("aria-label") || "")).toLowerCase();
-      const isSearchField = (f) => searchHints.some((h) => fieldMeta(f).includes(h));
-      const isVisible = (f) => { const s = window.getComputedStyle(f); return s.display !== "none" && s.visibility !== "hidden"; };
+      const searchHints = [
+        "search",
+        "搜索",
+        "搜尋",
+        "検索",
+        "검색",
+        "buscar",
+        "rechercher",
+        "suche",
+        "pesquisar",
+        "cerca",
+        "zoek",
+        "cari",
+      ];
+      const fieldMeta = (f) =>
+        (
+          (f.getAttribute("placeholder") || "") +
+          " " +
+          (f.getAttribute("aria-label") || "")
+        ).toLowerCase();
+      const isSearchField = (f) =>
+        searchHints.some((h) => fieldMeta(f).includes(h));
+      const isVisible = (f) => {
+        const s = window.getComputedStyle(f);
+        return s.display !== "none" && s.visibility !== "hidden";
+      };
 
       // Priority 1: field whose placeholder/aria looks like paste/link/url
       // (and NOT search), inside the dialog.
       let field = null;
-      const allFieldsList = [...dialog.querySelectorAll("textarea, input[type='text'], input[type='url']")];
+      const allFieldsList = [
+        ...dialog.querySelectorAll(
+          "textarea, input[type='text'], input[type='url']",
+        ),
+      ];
       for (const f of allFieldsList) {
         if (!isVisible(f) || isSearchField(f)) continue;
-        if (urlFieldLabels.some((label) => fieldMeta(f).includes(label))) { field = f; break; }
+        if (urlFieldLabels.some((label) => fieldMeta(f).includes(label))) {
+          field = f;
+          break;
+        }
       }
       // Priority 2: any visible textarea that is NOT the search box.
       if (!field) {
@@ -975,7 +1369,9 @@ async function addUrlSourcesBatch(tabId, urls) {
       }
       // Priority 3: any visible text/url input that is NOT the search box.
       if (!field) {
-        for (const inp of dialog.querySelectorAll('input[type="text"], input[type="url"]')) {
+        for (const inp of dialog.querySelectorAll(
+          'input[type="text"], input[type="url"]',
+        )) {
           if (!isVisible(inp) || isSearchField(inp)) continue;
           field = inp;
           break;
@@ -984,18 +1380,30 @@ async function addUrlSourcesBatch(tabId, urls) {
 
       if (!field) {
         const allFields = Array.from(dialog.querySelectorAll("input, textarea"))
-          .map(i => `${i.tagName}:${i.type||""}:ph="${i.placeholder||""}"`)
+          .map(
+            (i) => `${i.tagName}:${i.type || ""}:ph="${i.placeholder || ""}"`,
+          )
           .slice(0, 8);
-        return { success: false, error: "No URL field in dialog. Fields: " + allFields.join(", ") };
+        return {
+          success: false,
+          error: "No URL field in dialog. Fields: " + allFields.join(", "),
+        };
       }
 
       // Focus and set value
       field.focus();
 
       // Use native setter for Angular compatibility
-      const setter = field.tagName === "TEXTAREA"
-        ? Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set
-        : Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      const setter =
+        field.tagName === "TEXTAREA"
+          ? Object.getOwnPropertyDescriptor(
+              window.HTMLTextAreaElement.prototype,
+              "value",
+            )?.set
+          : Object.getOwnPropertyDescriptor(
+              window.HTMLInputElement.prototype,
+              "value",
+            )?.set;
 
       if (setter) {
         setter.call(field, urlsText);
@@ -1028,30 +1436,78 @@ async function addUrlSourcesBatch(tabId, urls) {
   const step4 = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
-      const hasAny = (text, labels) => labels.some((label) => text.includes(label));
-      const isVisible = (el) => { const s = window.getComputedStyle(el); return s.display !== "none" && s.visibility !== "hidden"; };
+      const getCleanText = (el) => {
+        let t = "";
+        for (const c of el.childNodes) {
+          if (c.nodeType === 3) t += c.textContent;
+          else if (c.nodeType === 1) {
+            const tag = c.tagName?.toLowerCase() || "";
+            const cls = (c.className || "").toString().toLowerCase();
+            if (
+              tag === "mat-icon" ||
+              cls.includes("material-icons") ||
+              cls.includes("mat-icon")
+            )
+              continue;
+            t += getCleanText(c);
+          }
+        }
+        return t.trim();
+      };
+      const hasAny = (text, labels) =>
+        labels.some((label) => text.includes(label));
+      const isVisible = (el) => {
+        const s = window.getComputedStyle(el);
+        return s.display !== "none" && s.visibility !== "hidden";
+      };
       const isDisabled = (el) =>
         el.disabled === true ||
         el.getAttribute("disabled") !== null ||
         el.getAttribute("aria-disabled") === "true";
       const insertLabels = [
-        "insert", "submit", "add source", "add sources",
-        "插入", "提交", "添加来源", "新增來源",
-        "挿入", "追加",
-        "삽입", "추가",
-        "insertar", "añadir", "agregar",
-        "insérer", "ajouter",
-        "einfügen", "hinzufügen",
-        "inserir", "adicionar",
-        "inserisci", "aggiungi",
-        "invoegen", "toevoegen",
-        "masukkan", "tambahkan",
+        "insert",
+        "submit",
+        "add source",
+        "add sources",
+        "插入",
+        "提交",
+        "添加来源",
+        "新增來源",
+        "挿入",
+        "追加",
+        "삽입",
+        "추가",
+        "insertar",
+        "añadir",
+        "agregar",
+        "insérer",
+        "ajouter",
+        "einfügen",
+        "hinzufügen",
+        "inserir",
+        "adicionar",
+        "inserisci",
+        "aggiungi",
+        "invoegen",
+        "toevoegen",
+        "masukkan",
+        "tambahkan",
       ];
       // Material icon ligatures used for "submit/continue" arrows.
-      const iconNames = ["arrow_forward", "arrow_upward", "arrow_right_alt", "send", "subdirectory_arrow_left", "keyboard_return", "north", "east"];
+      const iconNames = [
+        "arrow_forward",
+        "arrow_upward",
+        "arrow_right_alt",
+        "send",
+        "subdirectory_arrow_left",
+        "keyboard_return",
+        "north",
+        "east",
+      ];
       const iconText = (el) => {
-        const mi = el.querySelector("mat-icon, .material-icons, .material-icons-extended, .google-symbols, [class*='material-symbols']");
+        const mi = el.querySelector(
+          "mat-icon, .material-icons, .material-icons-extended, .google-symbols, [class*='material-symbols']",
+        );
         return (mi?.textContent || "").trim().toLowerCase();
       };
 
@@ -1061,7 +1517,9 @@ async function addUrlSourcesBatch(tabId, urls) {
       // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
       // not grab the first match — choose the largest visible one.
       const dialog = (() => {
-        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const all = [
+          ...document.querySelectorAll('mat-dialog-container, [role="dialog"]'),
+        ];
         const visible = all.filter((d) => {
           const s = window.getComputedStyle(d);
           if (s.display === "none" || s.visibility === "hidden") return false;
@@ -1069,27 +1527,47 @@ async function addUrlSourcesBatch(tabId, urls) {
           return r.width > 50 && r.height > 50;
         });
         visible.sort((a, b) => {
-          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          const ra = a.getBoundingClientRect(),
+            rb = b.getBoundingClientRect();
           return rb.width * rb.height - ra.width * ra.height;
         });
         return visible[0] || null;
       })();
-      if (!dialog) return { success: false, error: "Add-sources dialog not open (submit step)" };
-      const allClickable = [...dialog.querySelectorAll("button, [role='button'], [tabindex='0'], a")].filter(isVisible);
+      if (!dialog)
+        return {
+          success: false,
+          error: "Add-sources dialog not open (submit step)",
+        };
+      const allClickable = [
+        ...dialog.querySelectorAll(
+          "button, [role='button'], [tabindex='0'], a",
+        ),
+      ].filter(isVisible);
 
       // Pass 1: exact text match (e.g. "Insert").
       for (const el of allClickable) {
         if (isDisabled(el)) continue;
         const clean = getCleanText(el).trim().toLowerCase();
-        if (insertLabels.includes(clean)) { el.click(); return { success: true, clicked: clean, method: "text-exact" }; }
+        if (insertLabels.includes(clean)) {
+          el.click();
+          return { success: true, clicked: clean, method: "text-exact" };
+        }
       }
       // Pass 2: text/aria contains an insert label.
       for (const el of allClickable) {
         if (isDisabled(el)) continue;
         const clean = getCleanText(el).trim().toLowerCase();
         const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-        if ((hasAny(clean, insertLabels) && clean.length < 30) || hasAny(aria, insertLabels)) {
-          el.click(); return { success: true, clicked: clean || aria, method: "text-contains" };
+        if (
+          (hasAny(clean, insertLabels) && clean.length < 30) ||
+          hasAny(aria, insertLabels)
+        ) {
+          el.click();
+          return {
+            success: true,
+            clicked: clean || aria,
+            method: "text-contains",
+          };
         }
       }
       // Pass 3: arrow/send icon, or aria-label referencing such an icon.
@@ -1097,45 +1575,106 @@ async function addUrlSourcesBatch(tabId, urls) {
         if (isDisabled(el)) continue;
         const icon = iconText(el);
         const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-        if (iconNames.includes(icon) || iconNames.some((n) => aria.includes(n.replace(/_/g, " ")))) {
-          el.click(); return { success: true, clicked: icon || aria || "(icon)", method: "icon" };
+        if (
+          iconNames.includes(icon) ||
+          iconNames.some((n) => aria.includes(n.replace(/_/g, " ")))
+        ) {
+          el.click();
+          return {
+            success: true,
+            clicked: icon || aria || "(icon)",
+            method: "icon",
+          };
         }
       }
       // Pass 4: proximity — the enabled icon-only button nearest to the RIGHT
       // of (and vertically aligned with) the URL paste field. Skip the
       // "Search the web" box so we don't click its arrow.
-      const searchHints4 = ["search", "搜索", "搜尋", "検索", "검색", "buscar", "rechercher", "suche", "pesquisar", "cerca", "zoek", "cari"];
+      const searchHints4 = [
+        "search",
+        "搜索",
+        "搜尋",
+        "検索",
+        "검색",
+        "buscar",
+        "rechercher",
+        "suche",
+        "pesquisar",
+        "cerca",
+        "zoek",
+        "cari",
+      ];
       const isSearchField4 = (f) => {
-        const m = ((f.getAttribute("placeholder") || "") + " " + (f.getAttribute("aria-label") || "")).toLowerCase();
+        const m = (
+          (f.getAttribute("placeholder") || "") +
+          " " +
+          (f.getAttribute("aria-label") || "")
+        ).toLowerCase();
         return searchHints4.some((h) => m.includes(h));
       };
       let field = null;
-      for (const ta of dialog.querySelectorAll("textarea, input[type='text'], input[type='url']")) {
-        if (isVisible(ta) && !isSearchField4(ta)) { field = ta; break; }
+      for (const ta of dialog.querySelectorAll(
+        "textarea, input[type='text'], input[type='url']",
+      )) {
+        if (isVisible(ta) && !isSearchField4(ta)) {
+          field = ta;
+          break;
+        }
       }
       if (field) {
         const fr = field.getBoundingClientRect();
-        let best = null, bestDist = Infinity;
+        let best = null,
+          bestDist = Infinity;
         for (const el of allClickable) {
           if (isDisabled(el)) continue;
           const txt = getCleanText(el).trim();
           if (txt.length > 3) continue; // submit affordance here is icon-only
           const r = el.getBoundingClientRect();
           if (r.width === 0 || r.height === 0) continue;
-          const verticallyNear = r.top < fr.bottom + 40 && r.bottom > fr.top - 40;
+          const verticallyNear =
+            r.top < fr.bottom + 40 && r.bottom > fr.top - 40;
           const toRight = r.left >= fr.left; // same row, at/after the field
           if (!verticallyNear || !toRight) continue;
-          const dist = Math.hypot(r.left - fr.right, (r.top + r.height / 2) - (fr.top + fr.height / 2));
-          if (dist < bestDist) { bestDist = dist; best = el; }
+          const dist = Math.hypot(
+            r.left - fr.right,
+            r.top + r.height / 2 - (fr.top + fr.height / 2),
+          );
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = el;
+          }
         }
-        if (best) { best.click(); return { success: true, clicked: "(nearest-to-field)", method: "proximity" }; }
+        if (best) {
+          best.click();
+          return {
+            success: true,
+            clicked: "(nearest-to-field)",
+            method: "proximity",
+          };
+        }
       }
 
       // Debug: list visible clickable elements with their icon, if any.
       const visible = allClickable
-        .map((e) => { const c = getCleanText(e).trim(); const ic = iconText(e); const lbl = c || (ic ? `[icon:${ic}]` : "") || (e.getAttribute("aria-label") || ""); return lbl && lbl.length < 50 ? `${e.tagName}:"${lbl}"${isDisabled(e) ? "(disabled)" : ""}` : ""; })
-        .filter((t) => t.length > 0).slice(0, 20);
-      return { success: false, error: "No submit/Insert control found. Elements: " + visible.join(", ") };
+        .map((e) => {
+          const c = getCleanText(e).trim();
+          const ic = iconText(e);
+          const lbl =
+            c ||
+            (ic ? `[icon:${ic}]` : "") ||
+            e.getAttribute("aria-label") ||
+            "";
+          return lbl && lbl.length < 50
+            ? `${e.tagName}:"${lbl}"${isDisabled(e) ? "(disabled)" : ""}`
+            : "";
+        })
+        .filter((t) => t.length > 0)
+        .slice(0, 20);
+      return {
+        success: false,
+        error:
+          "No submit/Insert control found. Elements: " + visible.join(", "),
+      };
     },
   });
   steps.step4 = step4?.[0]?.result;
@@ -1152,7 +1691,9 @@ async function addUrlSourcesBatch(tabId, urls) {
       // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
       // not grab the first match — choose the largest visible one.
       const dialog = (() => {
-        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const all = [
+          ...document.querySelectorAll('mat-dialog-container, [role="dialog"]'),
+        ];
         const visible = all.filter((d) => {
           const s = window.getComputedStyle(d);
           if (s.display === "none" || s.visibility === "hidden") return false;
@@ -1160,23 +1701,35 @@ async function addUrlSourcesBatch(tabId, urls) {
           return r.width > 50 && r.height > 50;
         });
         visible.sort((a, b) => {
-          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          const ra = a.getBoundingClientRect(),
+            rb = b.getBoundingClientRect();
           return rb.width * rb.height - ra.width * ra.height;
         });
         return visible[0] || null;
       })();
       if (!dialog) return true; // dialog closed → submitted
-      const fields = [...dialog.querySelectorAll("textarea, input[type='text'], input[type='url']")]
-        .filter((f) => { const s = window.getComputedStyle(f); return s.display !== "none" && s.visibility !== "hidden"; });
+      const fields = [
+        ...dialog.querySelectorAll(
+          "textarea, input[type='text'], input[type='url']",
+        ),
+      ].filter((f) => {
+        const s = window.getComputedStyle(f);
+        return s.display !== "none" && s.visibility !== "hidden";
+      });
       if (fields.length === 0) return true; // field gone → submitted
       // Submitted only if every visible field is now empty.
       return fields.every((f) => !f.value || f.value.trim().length === 0);
     },
-    { timeoutMs: 8000, intervalMs: 300 }
+    { timeoutMs: 8000, intervalMs: 300 },
   );
 
   if (!submitted) {
-    return { success: false, error: "URLs were entered but the submit button did not register (they stayed in the box).", steps };
+    return {
+      success: false,
+      error:
+        "URLs were entered but the submit button did not register (they stayed in the box).",
+      steps,
+    };
   }
 
   // Wait for NotebookLM to process
@@ -1186,7 +1739,13 @@ async function addUrlSourcesBatch(tabId, urls) {
   await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          code: "Escape",
+          bubbles: true,
+        }),
+      );
     },
   });
 
@@ -1225,7 +1784,9 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
       // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
       // not grab the first match — choose the largest visible one.
       const dialog = (() => {
-        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const all = [
+          ...document.querySelectorAll('mat-dialog-container, [role="dialog"]'),
+        ];
         const visible = all.filter((d) => {
           const s = window.getComputedStyle(d);
           if (s.display === "none" || s.visibility === "hidden") return false;
@@ -1233,7 +1794,8 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
           return r.width > 50 && r.height > 50;
         });
         visible.sort((a, b) => {
-          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+          const ra = a.getBoundingClientRect(),
+            rb = b.getBoundingClientRect();
           return rb.width * rb.height - ra.width * ra.height;
         });
         return visible[0] || null;
@@ -1244,14 +1806,23 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
   if (stalePresent?.[0]?.result) {
     await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })),
+      func: () =>
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Escape",
+            code: "Escape",
+            bubbles: true,
+          }),
+        ),
     });
     await waitForInTab(
       tabId,
       () => {
         // Consider only visible dialogs — a stray 0×0 emoji-keyboard dialog
         // may linger in the DOM and would otherwise never "close".
-        const dlgs = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
+        const dlgs = [
+          ...document.querySelectorAll('mat-dialog-container, [role="dialog"]'),
+        ];
         return !dlgs.some((d) => {
           const s = window.getComputedStyle(d);
           if (s.display === "none" || s.visibility === "hidden") return false;
@@ -1259,7 +1830,7 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
           return r.width > 50 && r.height > 50;
         });
       },
-      { timeoutMs: 3000, intervalMs: 150 }
+      { timeoutMs: 3000, intervalMs: 150 },
     );
   }
 
@@ -1267,27 +1838,68 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
   const dialogOpened = await waitForInTab(
     tabId,
     () => {
-      const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
-      const hasAny = (text, labels) => labels.some((label) => text.includes(label));
+      const getCleanText = (el) => {
+        let t = "";
+        for (const c of el.childNodes) {
+          if (c.nodeType === 3) t += c.textContent;
+          else if (c.nodeType === 1) {
+            const tag = c.tagName?.toLowerCase() || "";
+            const cls = (c.className || "").toString().toLowerCase();
+            if (
+              tag === "mat-icon" ||
+              cls.includes("material-icons") ||
+              cls.includes("mat-icon")
+            )
+              continue;
+            t += getCleanText(c);
+          }
+        }
+        return t.trim();
+      };
+      const hasAny = (text, labels) =>
+        labels.some((label) => text.includes(label));
       const addSourceLabels = [
-        "add source", "add sources", "add a source",
-        "添加来源", "添加源", "新增来源", "加入来源",
-        "添加來源", "新增來源", "加入來源",
-        "ソースを追加", "情報源を追加",
-        "소스 추가", "출처 추가",
-        "añadir fuente", "añadir fuentes", "agregar fuente", "agregar fuentes",
-        "ajouter une source", "ajouter des sources",
-        "quelle hinzufügen", "quellen hinzufügen",
-        "adicionar fonte", "adicionar fontes",
-        "aggiungi fonte", "aggiungi fonti",
-        "bron toevoegen", "bronnen toevoegen",
+        "add source",
+        "add sources",
+        "add a source",
+        "添加来源",
+        "添加源",
+        "新增来源",
+        "加入来源",
+        "添加來源",
+        "新增來源",
+        "加入來源",
+        "ソースを追加",
+        "情報源を追加",
+        "소스 추가",
+        "출처 추가",
+        "añadir fuente",
+        "añadir fuentes",
+        "agregar fuente",
+        "agregar fuentes",
+        "ajouter une source",
+        "ajouter des sources",
+        "quelle hinzufügen",
+        "quellen hinzufügen",
+        "adicionar fonte",
+        "adicionar fontes",
+        "aggiungi fonte",
+        "aggiungi fonti",
+        "bron toevoegen",
+        "bronnen toevoegen",
         "tambahkan sumber",
       ];
       const body = document.body.textContent || "";
-      if (/drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(body)) {
+      if (
+        /drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(
+          body,
+        )
+      ) {
         return { success: true, method: "already-open" };
       }
-      const candidates = document.querySelectorAll('button, [role="button"], a, [tabindex="0"]');
+      const candidates = document.querySelectorAll(
+        'button, [role="button"], a, [tabindex="0"]',
+      );
       for (const el of candidates) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
@@ -1300,7 +1912,7 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
       }
       return null;
     },
-    { timeoutMs: 8000, intervalMs: 300 }
+    { timeoutMs: 8000, intervalMs: 300 },
   );
 
   if (!dialogOpened?.success) {
@@ -1310,10 +1922,14 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
   if (dialogOpened.method !== "already-open") {
     const ready = await waitForInTab(
       tabId,
-      () => /drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(document.body.textContent || ""),
-      { timeoutMs: 5000, intervalMs: 100 }
+      () =>
+        /drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(
+          document.body.textContent || "",
+        ),
+      { timeoutMs: 5000, intervalMs: 100 },
     );
-    if (!ready) return { success: false, error: "Upload dialog did not appear" };
+    if (!ready)
+      return { success: false, error: "Upload dialog did not appear" };
   }
 
   // Step 2: Find the "Upload files" button coordinates and use a trusted CDP
@@ -1323,29 +1939,72 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
   const uploadBtnCoords = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => {
-      const getCleanText = (el) => { let t=""; for (const c of el.childNodes) { if (c.nodeType===3) t+=c.textContent; else if (c.nodeType===1) { const tag=c.tagName?.toLowerCase()||""; const cls=(c.className||"").toString().toLowerCase(); if (tag==="mat-icon"||cls.includes("material-icons")||cls.includes("mat-icon")) continue; t+=getCleanText(c); } } return t.trim(); };
-      const hasAny = (text, labels) => labels.some((label) => text.includes(label));
+      const getCleanText = (el) => {
+        let t = "";
+        for (const c of el.childNodes) {
+          if (c.nodeType === 3) t += c.textContent;
+          else if (c.nodeType === 1) {
+            const tag = c.tagName?.toLowerCase() || "";
+            const cls = (c.className || "").toString().toLowerCase();
+            if (
+              tag === "mat-icon" ||
+              cls.includes("material-icons") ||
+              cls.includes("mat-icon")
+            )
+              continue;
+            t += getCleanText(c);
+          }
+        }
+        return t.trim();
+      };
+      const hasAny = (text, labels) =>
+        labels.some((label) => text.includes(label));
       const uploadLabels = [
-        "upload files", "upload file", "upload",
-        "上传文件", "上传", "上傳檔案", "上傳文件", "上傳",
-        "ファイルをアップロード", "アップロード",
-        "파일 업로드", "업로드",
-        "subir archivos", "subir archivo", "subir",
-        "téléverser des fichiers", "téléverser", "importer des fichiers",
-        "dateien hochladen", "datei hochladen", "hochladen",
-        "carregar arquivos", "carregar ficheiros", "carregar",
-        "carica file", "carica",
-        "bestanden uploaden", "uploaden",
-        "unggah file", "unggah",
+        "upload files",
+        "upload file",
+        "upload",
+        "上传文件",
+        "上传",
+        "上傳檔案",
+        "上傳文件",
+        "上傳",
+        "ファイルをアップロード",
+        "アップロード",
+        "파일 업로드",
+        "업로드",
+        "subir archivos",
+        "subir archivo",
+        "subir",
+        "téléverser des fichiers",
+        "téléverser",
+        "importer des fichiers",
+        "dateien hochladen",
+        "datei hochladen",
+        "hochladen",
+        "carregar arquivos",
+        "carregar ficheiros",
+        "carregar",
+        "carica file",
+        "carica",
+        "bestanden uploaden",
+        "uploaden",
+        "unggah file",
+        "unggah",
       ];
-      const all = document.querySelectorAll('button, [role="button"], [tabindex="0"], a, label, div, span');
+      const all = document.querySelectorAll(
+        'button, [role="button"], [tabindex="0"], a, label, div, span',
+      );
       for (const el of all) {
         const style = window.getComputedStyle(el);
         if (style.display === "none" || style.visibility === "hidden") continue;
         const clean = getCleanText(el).toLowerCase();
         if (uploadLabels.includes(clean)) {
           const rect = el.getBoundingClientRect();
-          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, text: clean };
+          return {
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
+            text: clean,
+          };
         }
       }
       // Loose fallback
@@ -1355,7 +2014,11 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
         const clean = getCleanText(el).toLowerCase();
         if (hasAny(clean, uploadLabels) && clean.length < 40) {
           const rect = el.getBoundingClientRect();
-          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, text: clean };
+          return {
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
+            text: clean,
+          };
         }
       }
       return null;
@@ -1374,11 +2037,17 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
 
   try {
     await chrome.debugger.sendCommand({ tabId }, "Page.enable", {});
-    await chrome.debugger.sendCommand({ tabId }, "Page.setInterceptFileChooserDialog", { enabled: true });
+    await chrome.debugger.sendCommand(
+      { tabId },
+      "Page.setInterceptFileChooserDialog",
+      { enabled: true },
+    );
     interceptionEnabled = true;
 
     let fileChooserResolve;
-    const fileChooserPromise = new Promise(r => { fileChooserResolve = r; });
+    const fileChooserPromise = new Promise((r) => {
+      fileChooserResolve = r;
+    });
     const chooserTimeout = setTimeout(() => fileChooserResolve(null), 15000);
     onEvent = (source, method, params) => {
       if (source.tabId === tabId && method === "Page.fileChooserOpened") {
@@ -1393,16 +2062,27 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     const x = Math.round(btnCoords.x);
     const y = Math.round(btnCoords.y);
     await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-      type: "mousePressed", x, y, button: "left", clickCount: 1,
+      type: "mousePressed",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
     });
     await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-      type: "mouseReleased", x, y, button: "left", clickCount: 1,
+      type: "mouseReleased",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
     });
 
     // Step 4: Wait for file chooser event
     const chooserEvent = await fileChooserPromise;
     if (!chooserEvent) {
-      return { success: false, error: `Trusted click on "${btnCoords.text}" did not open file chooser` };
+      return {
+        success: false,
+        error: `Trusted click on "${btnCoords.text}" did not open file chooser`,
+      };
     }
 
     // Step 5: Set ALL files in this batch via a single DataTransfer. NotebookLM's
@@ -1410,10 +2090,17 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     // ingests the whole batch. Bytes are built from base64 in-page (avoids the
     // Windows native-path issues of DOM.setFileInputFiles).
     const filesPayload = JSON.stringify(
-      filesData.map((f) => ({ base64: f.base64, filename: f.filename, type: f.contentType || "application/pdf" }))
+      filesData.map((f) => ({
+        base64: f.base64,
+        filename: f.filename,
+        type: f.contentType || "application/pdf",
+      })),
     );
-    const setResult = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-      expression: `
+    const setResult = await chrome.debugger.sendCommand(
+      { tabId },
+      "Runtime.evaluate",
+      {
+        expression: `
         (async () => {
           try {
             const files = ${filesPayload};
@@ -1434,13 +2121,17 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
           } catch(e) { return { ok: false, reason: e.message }; }
         })()
       `,
-      returnByValue: true,
-      awaitPromise: true,
-    });
+        returnByValue: true,
+        awaitPromise: true,
+      },
+    );
 
     const setInfo = setResult?.result?.value;
     if (!setInfo?.ok) {
-      return { success: false, error: `Could not set files on input: ${setInfo?.reason}` };
+      return {
+        success: false,
+        error: `Could not set files on input: ${setInfo?.reason}`,
+      };
     }
 
     // Step 6: Close the dialog, then wait for it to actually disappear.
@@ -1450,7 +2141,14 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     await sleep(300);
     await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true })),
+      func: () =>
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Escape",
+            code: "Escape",
+            bubbles: true,
+          }),
+        ),
     });
     await waitForInTab(
       tabId,
@@ -1458,26 +2156,33 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
         // Prefer the dialog element — body text can match "upload files" in
         // toasts or the sources list after upload completes.
         // Pick the real, VISIBLE Add-sources dialog. NotebookLM may keep a stray
-      // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
-      // not grab the first match — choose the largest visible one.
-      const dialog = (() => {
-        const all = [...document.querySelectorAll('mat-dialog-container, [role="dialog"]')];
-        const visible = all.filter((d) => {
-          const s = window.getComputedStyle(d);
-          if (s.display === "none" || s.visibility === "hidden") return false;
-          const r = d.getBoundingClientRect();
-          return r.width > 50 && r.height > 50;
-        });
-        visible.sort((a, b) => {
-          const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-          return rb.width * rb.height - ra.width * ra.height;
-        });
-        return visible[0] || null;
-      })();
+        // hidden emoji-keyboard dialog ([role=dialog], 0×0) in the DOM, so we must
+        // not grab the first match — choose the largest visible one.
+        const dialog = (() => {
+          const all = [
+            ...document.querySelectorAll(
+              'mat-dialog-container, [role="dialog"]',
+            ),
+          ];
+          const visible = all.filter((d) => {
+            const s = window.getComputedStyle(d);
+            if (s.display === "none" || s.visibility === "hidden") return false;
+            const r = d.getBoundingClientRect();
+            return r.width > 50 && r.height > 50;
+          });
+          visible.sort((a, b) => {
+            const ra = a.getBoundingClientRect(),
+              rb = b.getBoundingClientRect();
+            return rb.width * rb.height - ra.width * ra.height;
+          });
+          return visible[0] || null;
+        })();
         if (dialog) return false;
-        return !/drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(document.body.textContent || "");
+        return !/drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(
+          document.body.textContent || "",
+        );
       },
-      { timeoutMs: 10000, intervalMs: 200 }
+      { timeoutMs: 10000, intervalMs: 200 },
     );
 
     return { success: true, count: filesData.length };
@@ -1485,10 +2190,18 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     return { success: false, error: `File inject: ${e.message}` };
   } finally {
     if (listenerAttached && onEvent) {
-      try { chrome.debugger.onEvent.removeListener(onEvent); } catch {}
+      try {
+        chrome.debugger.onEvent.removeListener(onEvent);
+      } catch {}
     }
     if (interceptionEnabled) {
-      try { await chrome.debugger.sendCommand({ tabId }, "Page.setInterceptFileChooserDialog", { enabled: false }); } catch {}
+      try {
+        await chrome.debugger.sendCommand(
+          { tabId },
+          "Page.setInterceptFileChooserDialog",
+          { enabled: false },
+        );
+      } catch {}
     }
   }
 }
@@ -1518,7 +2231,11 @@ function ensureStudioVisibleFn() {
     if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
     const tag = el.tagName?.toLowerCase() || "";
     const cls = (el.className || "").toString().toLowerCase();
-    return tag === "mat-icon" || cls.includes("material-icons") || cls.includes("mat-icon");
+    return (
+      tag === "mat-icon" ||
+      cls.includes("material-icons") ||
+      cls.includes("mat-icon")
+    );
   };
   const getCleanText = (node) => {
     let result = "";
@@ -1533,15 +2250,23 @@ function ensureStudioVisibleFn() {
     return result;
   };
   // Already showing note cards / the Studio panel? Nothing to do.
-  if (document.querySelector(".artifact-title, [class*='artifact-title']")) return true;
+  if (document.querySelector(".artifact-title, [class*='artifact-title']"))
+    return true;
 
   // Look for a tab/button labeled "Studio" / localized equivalent and open it.
   const clickables = document.querySelectorAll(
-    '[role="tab"], button, [role="button"], a, [class*="tab"]'
+    '[role="tab"], button, [role="button"], a, [class*="tab"]',
   );
   const studioLabels = [
-    "studio", "工作室", "工作區", "スタジオ", "스튜디오",
-    "estudio", "atelier", "labor", "estúdio",
+    "studio",
+    "工作室",
+    "工作區",
+    "スタジオ",
+    "스튜디오",
+    "estudio",
+    "atelier",
+    "labor",
+    "estúdio",
   ];
   for (const el of clickables) {
     const text = getCleanText(el).trim().toLowerCase();
@@ -1561,7 +2286,8 @@ async function extractNotesFromTab(tabId) {
   for (let attempt = 0; attempt < 8; attempt++) {
     const ready = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => !!document.querySelector(".artifact-title, [class*='artifact-title']"),
+      func: () =>
+        !!document.querySelector(".artifact-title, [class*='artifact-title']"),
     });
     if (ready?.[0]?.result) break;
     await chrome.scripting.executeScript({
@@ -1579,14 +2305,19 @@ async function extractNotesFromTab(tabId) {
         if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
         const cls = (el.className || "").toString().toLowerCase();
         const tag = el.tagName?.toLowerCase() || "";
-        return tag === "mat-icon" || cls.includes("material-icons") || cls.includes("mat-icon");
+        return (
+          tag === "mat-icon" ||
+          cls.includes("material-icons") ||
+          cls.includes("mat-icon")
+        );
       };
       const getCleanText = (node) => {
         let result = "";
         for (const child of node.childNodes) {
           if (child.nodeType === Node.TEXT_NODE) result += child.textContent;
           else if (child.nodeType === Node.ELEMENT_NODE) {
-            if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
+            if (child.tagName === "STYLE" || child.tagName === "SCRIPT")
+              continue;
             if (isIconElement(child)) continue;
             result += getCleanText(child);
           }
@@ -1595,19 +2326,23 @@ async function extractNotesFromTab(tabId) {
       };
 
       const normalize = (t) => t.replace(/\s+/g, " ").trim().toLowerCase();
-      const relativeTimeRe = /(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제)/i;
+      const relativeTimeRe =
+        /(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제)/i;
 
       // Generator tiles (Slide Deck, Mind Map, Quiz, Reports, Audio/Video
       // Overview, Flashcards, Infographic, Data Table) describe themselves with a
       // "Generate …" tooltip. Saved text notes never do. We use this as a guard so
       // a tile can never be picked even if it ever borrows the note CSS class.
-      const generatorRe = /^(generate |创建|新增|生成|작성|générer |erstellen |criar |crear |genera )/i;
+      const generatorRe =
+        /^(generate |创建|新增|生成|작성|générer |erstellen |criar |crear |genera )/i;
 
       // Resolve the full, untruncated title for an artifact title element. The
       // visible <span> text is ellipsized; the complete title lives in the cdk
       // tooltip referenced by aria-describedby. Fall back to visible text.
       const fullTitleFor = (titleEl) => {
-        const adId = (titleEl.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean)[0];
+        const adId = (titleEl.getAttribute("aria-describedby") || "")
+          .split(/\s+/)
+          .filter(Boolean)[0];
         if (adId) {
           const tip = document.getElementById(adId);
           const tipText = (tip?.textContent || "").trim();
@@ -1624,18 +2359,21 @@ async function extractNotesFromTab(tabId) {
       // reliable, language-independent anchor.
       const foundNotes = [];
       const seenTitles = [];
-      const titleEls = document.querySelectorAll(".artifact-title, [class*='artifact-title']");
+      const titleEls = document.querySelectorAll(
+        ".artifact-title, [class*='artifact-title']",
+      );
       for (const titleEl of titleEls) {
         const title = fullTitleFor(titleEl).replace(/\s+/g, " ").trim();
         if (!title || title.length < 3) continue;
         if (generatorRe.test(title)) continue; // never a generator tile
 
         const normTitle = normalize(title);
-        if (seenTitles.some(s => s === normTitle)) continue;
+        if (seenTitles.some((s) => s === normTitle)) continue;
         seenTitles.push(normTitle);
 
         // Pull the timestamp from the surrounding card, if present (best-effort).
-        const card = titleEl.closest(".artifact-item-button") || titleEl.parentElement;
+        const card =
+          titleEl.closest(".artifact-item-button") || titleEl.parentElement;
         const cardText = card ? getCleanText(card).trim() : "";
         const tsMatch = cardText.match(relativeTimeRe);
 
@@ -1650,7 +2388,9 @@ async function extractNotesFromTab(tabId) {
 
       // FALLBACK STRATEGY — legacy timestamp heuristic.
       // Kept for older NotebookLM layouts that predate the artifact-* markup.
-      const allElements = document.querySelectorAll("*:not(style):not(script):not(link):not(meta):not(head)");
+      const allElements = document.querySelectorAll(
+        "*:not(style):not(script):not(link):not(meta):not(head)",
+      );
       const seenCards = new Set();
 
       for (const el of allElements) {
@@ -1658,14 +2398,23 @@ async function extractNotesFromTab(tabId) {
         if (style.display === "none" || style.visibility === "hidden") continue;
 
         const rawText = el.textContent?.trim() || "";
-        if (rawText.length > 2000 || rawText.length < 8 || el.children.length > 20) continue;
+        if (
+          rawText.length > 2000 ||
+          rawText.length < 8 ||
+          el.children.length > 20
+        )
+          continue;
         if (!relativeTimeRe.test(rawText)) continue;
 
         let card = el;
         for (let i = 0; i < 3; i++) {
           if (!card.parentElement) break;
           if (card.parentElement.children.length > 5) break;
-          if (card.parentElement.tagName === "MAIN" || card.parentElement.tagName === "BODY") break;
+          if (
+            card.parentElement.tagName === "MAIN" ||
+            card.parentElement.tagName === "BODY"
+          )
+            break;
           card = card.parentElement;
         }
 
@@ -1675,17 +2424,25 @@ async function extractNotesFromTab(tabId) {
         const cleanText = getCleanText(card).trim();
         if (cleanText.length < 8 || /\{[^}]*:[^}]*\}/.test(cleanText)) continue;
 
-        const lines = cleanText.split(/\n/).map(l => l.trim()).filter(Boolean);
+        const lines = cleanText
+          .split(/\n/)
+          .map((l) => l.trim())
+          .filter(Boolean);
         let title = "";
         let noteType = "saved-note";
-        const typePattern = /^(Explainer|Deep Dive|Study Guide|Briefing|FAQ|Timeline|Outline|Report|Audio Overview|New Note|说明|深度解析|学习指南|简报|常见问题|时间轴|大纲|报告|音频概览|新笔记)$/i;
+        const typePattern =
+          /^(Explainer|Deep Dive|Study Guide|Briefing|FAQ|Timeline|Outline|Report|Audio Overview|New Note|说明|深度解析|学习指南|简报|常见问题|时间轴|大纲|报告|音频概览|新笔记)$/i;
 
         for (const line of lines) {
           if (line.length <= 2) continue;
           if (relativeTimeRe.test(line)) continue;
-          if (/^(\d+\s*sources?|\d+\s*个?来源|\d+\s*個?來源)$/i.test(line)) continue;
+          if (/^(\d+\s*sources?|\d+\s*个?来源|\d+\s*個?來源)$/i.test(line))
+            continue;
           if (/^[·•\-–—\s]+$/.test(line)) continue;
-          if (typePattern.test(line)) { noteType = line; continue; }
+          if (typePattern.test(line)) {
+            noteType = line;
+            continue;
+          }
           if (!title) title = line;
         }
 
@@ -1693,27 +2450,51 @@ async function extractNotesFromTab(tabId) {
 
         // Clean trailing junk from title: timestamps, "Add note", other note names
         title = title
-          .replace(/\s*(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제).*/i, "")   // timestamp and everything after
-          .replace(/\s*(Add\s+note|添加笔记).*/i, "")         // "Add note" and everything after
-          .replace(/\s*(\d+\s*sources?|\d+\s*个?来源|\d+\s*個?來源).*/i, "")     // source count and everything after
+          .replace(
+            /\s*(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제).*/i,
+            "",
+          ) // timestamp and everything after
+          .replace(/\s*(Add\s+note|添加笔记).*/i, "") // "Add note" and everything after
+          .replace(/\s*(\d+\s*sources?|\d+\s*个?来源|\d+\s*個?來源).*/i, "") // source count and everything after
           .trim();
 
         if (!title || title.length < 3) continue;
         const lower = title.toLowerCase();
-        if (/^(sources?|chat|studio|notes?|settings?|share|help|add\s|create\s|来源|聊天|工作室|笔记|设置|分享|帮助|添加|创建)$/i.test(lower)) continue;
+        if (
+          /^(sources?|chat|studio|notes?|settings?|share|help|add\s|create\s|来源|聊天|工作室|笔记|设置|分享|帮助|添加|创建)$/i.test(
+            lower,
+          )
+        )
+          continue;
 
         // Early dedup: skip if we already found a note with this title
         const normTitle = normalize(title);
-        if (seenTitles.some(s => s === normTitle || normTitle.startsWith(s) || s.startsWith(normTitle))) continue;
+        if (
+          seenTitles.some(
+            (s) =>
+              s === normTitle ||
+              normTitle.startsWith(s) ||
+              s.startsWith(normTitle),
+          )
+        )
+          continue;
         seenTitles.push(normTitle);
 
         if (noteType === "saved-note") {
-          const m = cleanText.match(/(Explainer|Deep Dive|Study Guide|Briefing|FAQ|Timeline|Outline|Report|Audio Overview|说明|深度解析|学习指南|简报|常见问题|时间轴|大纲|报告|音频概览)/i);
+          const m = cleanText.match(
+            /(Explainer|Deep Dive|Study Guide|Briefing|FAQ|Timeline|Outline|Report|Audio Overview|说明|深度解析|学习指南|简报|常见问题|时间轴|大纲|报告|音频概览)/i,
+          );
           if (m) noteType = m[1];
         }
 
         const lt = noteType.toLowerCase();
-        if (lt.includes("audio") || lt.includes("deep dive") || lt.includes("音频") || lt.includes("深度解析")) continue;
+        if (
+          lt.includes("audio") ||
+          lt.includes("deep dive") ||
+          lt.includes("音频") ||
+          lt.includes("深度解析")
+        )
+          continue;
 
         const tsMatch = cleanText.match(relativeTimeRe);
 
@@ -1726,9 +2507,11 @@ async function extractNotesFromTab(tabId) {
 
       // Final dedup safety net (early dedup above should catch most)
       const seen = [];
-      return foundNotes.filter(n => {
+      return foundNotes.filter((n) => {
         const norm = normalize(n.title);
-        const isDup = seen.some(s => s === norm || norm.startsWith(s) || s.startsWith(norm));
+        const isDup = seen.some(
+          (s) => s === norm || norm.startsWith(s) || s.startsWith(norm),
+        );
         if (isDup) return false;
         seen.push(norm);
         return true;
@@ -1757,7 +2540,10 @@ async function extractNotesFromTab(tabId) {
     for (let attempt = 0; attempt < 8; attempt++) {
       const ready = await chrome.scripting.executeScript({
         target: { tabId },
-        func: () => !!document.querySelector(".artifact-title, [class*='artifact-title']"),
+        func: () =>
+          !!document.querySelector(
+            ".artifact-title, [class*='artifact-title']",
+          ),
       });
       if (ready?.[0]?.result) break;
       await chrome.scripting.executeScript({
@@ -1776,14 +2562,19 @@ async function extractNotesFromTab(tabId) {
           if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
           const tag = el.tagName?.toLowerCase() || "";
           const cls = (el.className || "").toString().toLowerCase();
-          return tag === "mat-icon" || cls.includes("material-icons") || cls.includes("mat-icon");
+          return (
+            tag === "mat-icon" ||
+            cls.includes("material-icons") ||
+            cls.includes("mat-icon")
+          );
         };
         const getCleanText = (node) => {
           let result = "";
           for (const child of node.childNodes) {
             if (child.nodeType === Node.TEXT_NODE) result += child.textContent;
             else if (child.nodeType === Node.ELEMENT_NODE) {
-              if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
+              if (child.tagName === "STYLE" || child.tagName === "SCRIPT")
+                continue;
               if (isIconElement(child)) continue;
               result += getCleanText(child);
             }
@@ -1793,7 +2584,9 @@ async function extractNotesFromTab(tabId) {
 
         // Resolve the full title for an artifact title element (tooltip first).
         const fullTitleFor = (titleEl) => {
-          const adId = (titleEl.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean)[0];
+          const adId = (titleEl.getAttribute("aria-describedby") || "")
+            .split(/\s+/)
+            .filter(Boolean)[0];
           if (adId) {
             const tip = document.getElementById(adId);
             const tipText = (tip?.textContent || "").trim();
@@ -1801,7 +2594,8 @@ async function extractNotesFromTab(tabId) {
           }
           return getCleanText(titleEl).trim();
         };
-        const generatorRe = /^(generate |创建|新增|生成|작성|générer |erstellen |criar |crear |genera )/i;
+        const generatorRe =
+          /^(generate |创建|新增|生成|작성|générer |erstellen |criar |crear |genera )/i;
         const norm = (t) => (t || "").replace(/\s+/g, " ").trim().toLowerCase();
         const wantNorm = norm(targetTitle);
 
@@ -1812,21 +2606,31 @@ async function extractNotesFromTab(tabId) {
         // This guarantees we never click a Studio generator tile (Slide Deck,
         // Mind Map, etc.) — those do not use `.artifact-title` and, defensively,
         // carry a "Generate …" tooltip we exclude. Works collapsed or expanded.
-        const titleEls = document.querySelectorAll(".artifact-title, [class*='artifact-title']");
+        const titleEls = document.querySelectorAll(
+          ".artifact-title, [class*='artifact-title']",
+        );
         for (const titleEl of titleEls) {
           const full = fullTitleFor(titleEl);
           if (!full || generatorRe.test(full)) continue;
           const n = norm(full);
-          if (n === wantNorm || n.startsWith(wantNorm) || wantNorm.startsWith(n)) {
-            card = titleEl.closest("artifact-library-note") ||
-                   titleEl.closest(".artifact-item-button") ||
-                   titleEl.parentElement;
+          if (
+            n === wantNorm ||
+            n.startsWith(wantNorm) ||
+            wantNorm.startsWith(n)
+          ) {
+            card =
+              titleEl.closest("artifact-library-note") ||
+              titleEl.closest(".artifact-item-button") ||
+              titleEl.parentElement;
             // The element that actually opens the note is the full-width
             // `.artifact-stretched-button` (a real <button>). Its sibling
             // `.artifact-actions` button is the 3-dot overflow menu — avoid it.
-            artifactBtn = (card && card.querySelector(".artifact-stretched-button")) ||
-                          titleEl.closest(".artifact-button-content")?.querySelector(".artifact-stretched-button") ||
-                          null;
+            artifactBtn =
+              (card && card.querySelector(".artifact-stretched-button")) ||
+              titleEl
+                .closest(".artifact-button-content")
+                ?.querySelector(".artifact-stretched-button") ||
+              null;
             break;
           }
         }
@@ -1843,18 +2647,26 @@ async function extractNotesFromTab(tabId) {
 
         // FALLBACK: legacy text + timestamp heuristic for older layouts.
         if (!card) {
-          const allElements = document.querySelectorAll("*:not(style):not(script):not(link):not(meta):not(head)");
+          const allElements = document.querySelectorAll(
+            "*:not(style):not(script):not(link):not(meta):not(head)",
+          );
           let bestCard = null;
           let bestSize = Infinity;
-          const relativeTimeRe = /(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제)/i;
+          const relativeTimeRe =
+            /(\d+\s*[mhd]\s*ago|\d+\s*(min|mins|minute|minutes|hr|hrs|hour|hours|day|days)\s*ago|\d+\s*(分钟|小時|小时|天|日|周|週|星期|个月|個月|月|年)前|\d+\s*(分|時間|日|週間|か月|ヶ月|年)前|\d+\s*(분|시간|일|주|개월|년)\s*전|hace\s+\d+\s*(min|hora|horas|día|dias|días|semana|mes|año|años)|il y a\s+\d+\s*(min|heure|heures|jour|jours|semaine|mois|an|ans)|vor\s+\d+\s*(min|minute|stunden?|tage?|wochen?|monate?|jahre?)|昨天|前天|昨日|一昨日|어제)/i;
 
           for (const el of allElements) {
             const style = window.getComputedStyle(el);
-            if (style.display === "none" || style.visibility === "hidden") continue;
+            if (style.display === "none" || style.visibility === "hidden")
+              continue;
             const rawText = el.textContent?.trim() || "";
             if (rawText.length > 2000 || rawText.length < 8) continue;
             // Must contain the title and a timestamp pattern (card indicator)
-            if (!rawText.includes(targetTitle.substring(0, 30)) || !relativeTimeRe.test(rawText)) continue;
+            if (
+              !rawText.includes(targetTitle.substring(0, 30)) ||
+              !relativeTimeRe.test(rawText)
+            )
+              continue;
 
             // Prefer the smallest element that contains the full title
             // (most specific = the actual card, not a parent container)
@@ -1864,14 +2676,19 @@ async function extractNotesFromTab(tabId) {
             }
           }
 
-          if (!bestCard) return { success: false, error: "card-not-found-by-title" };
+          if (!bestCard)
+            return { success: false, error: "card-not-found-by-title" };
 
           // Walk up a bit to get the actual card container
           card = bestCard;
           for (let i = 0; i < 3; i++) {
             if (!card.parentElement) break;
             if (card.parentElement.children.length > 5) break;
-            if (card.parentElement.tagName === "MAIN" || card.parentElement.tagName === "BODY") break;
+            if (
+              card.parentElement.tagName === "MAIN" ||
+              card.parentElement.tagName === "BODY"
+            )
+              break;
             card = card.parentElement;
           }
         }
@@ -1884,7 +2701,13 @@ async function extractNotesFromTab(tabId) {
           if (rect.width > 0 && rect.height > 0) {
             const x = rect.left + rect.width / 2;
             const y = rect.top + rect.height / 2;
-            const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
+            const opts = {
+              bubbles: true,
+              cancelable: true,
+              clientX: x,
+              clientY: y,
+              button: 0,
+            };
             card.dispatchEvent(new PointerEvent("pointerdown", opts));
             card.dispatchEvent(new MouseEvent("mousedown", opts));
             card.dispatchEvent(new PointerEvent("pointerup", opts));
@@ -1906,7 +2729,9 @@ async function extractNotesFromTab(tabId) {
         }
 
         // Click strategy 2: Interactive child
-        const interactives = card.querySelectorAll('button, [role="button"], [role="link"], [tabindex="0"]');
+        const interactives = card.querySelectorAll(
+          'button, [role="button"], [role="link"], [tabindex="0"]',
+        );
         for (const btn of interactives) {
           const rect = btn.getBoundingClientRect();
           if (rect.width > 0 && rect.height > 0) {
@@ -1919,7 +2744,13 @@ async function extractNotesFromTab(tabId) {
         const rect = card.getBoundingClientRect();
         const x = rect.left + rect.width / 2;
         const y = rect.top + rect.height / 2;
-        const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
+        const opts = {
+          bubbles: true,
+          cancelable: true,
+          clientX: x,
+          clientY: y,
+          button: 0,
+        };
         card.dispatchEvent(new PointerEvent("pointerdown", opts));
         card.dispatchEvent(new MouseEvent("mousedown", opts));
         card.dispatchEvent(new PointerEvent("pointerup", opts));
@@ -1941,7 +2772,8 @@ async function extractNotesFromTab(tabId) {
         content: "",
         type: card.type,
         timestamp: card.timestamp || new Date().toISOString(),
-        _method: "click-failed:" + (clickResult?.[0]?.result?.error || "unknown"),
+        _method:
+          "click-failed:" + (clickResult?.[0]?.result?.error || "unknown"),
       });
       continue;
     }
@@ -1959,8 +2791,13 @@ async function extractNotesFromTab(tabId) {
           // The open note renders as a `labs-tailwind-doc-viewer` in the Studio
           // panel (not inside chat-panel). Its presence on-screen is the most
           // direct "note opened" signal.
-          const vh = window.innerHeight || document.documentElement.clientHeight;
-          const editorEls = [...document.querySelectorAll("labs-tailwind-doc-viewer, note-editor .ProseMirror, .ProseMirror, rich-text-editor.note-editor")];
+          const vh =
+            window.innerHeight || document.documentElement.clientHeight;
+          const editorEls = [
+            ...document.querySelectorAll(
+              "labs-tailwind-doc-viewer, note-editor .ProseMirror, .ProseMirror, rich-text-editor.note-editor",
+            ),
+          ];
           const editorVisible = editorEls.some((el) => {
             if (el.closest("chat-panel")) return false;
             const r = el.getBoundingClientRect();
@@ -1968,15 +2805,30 @@ async function extractNotesFromTab(tabId) {
           });
           return {
             hasEditor: !!editorVisible,
-            hasBanner: /saved\s+(responses?|notes?)\s+are\s+(view|read)|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i.test(bodyText),
-            hasBreadcrumb: /(Studio|工作室|工作區|スタジオ|스튜디오|Estudio|Atelier|Labor|Estúdio)\s*[>›»]\s/i.test(bodyText),
-            hasConvertBtn: /convert to source|转换为来源|轉換為來源|ソースに変換|소스로 변환|convertir en fuente|convertir en source|in quelle umwandeln|converter em fonte|converti in fonte/i.test(bodyText),
+            hasBanner:
+              /saved\s+(responses?|notes?)\s+are\s+(view|read)|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i.test(
+                bodyText,
+              ),
+            hasBreadcrumb:
+              /(Studio|工作室|工作區|スタジオ|스튜디오|Estudio|Atelier|Labor|Estúdio)\s*[>›»]\s/i.test(
+                bodyText,
+              ),
+            hasConvertBtn:
+              /convert to source|转换为来源|轉換為來源|ソースに変換|소스로 변환|convertir en fuente|convertir en source|in quelle umwandeln|converter em fonte|converti in fonte/i.test(
+                bodyText,
+              ),
             url: window.location.href,
           };
         },
       });
       const st = check?.[0]?.result || {};
-      if (st.hasEditor || st.hasBanner || st.hasBreadcrumb || st.hasConvertBtn || st.url !== baseUrl) {
+      if (
+        st.hasEditor ||
+        st.hasBanner ||
+        st.hasBreadcrumb ||
+        st.hasConvertBtn ||
+        st.url !== baseUrl
+      ) {
         detailOpened = true;
         break;
       }
@@ -1991,14 +2843,19 @@ async function extractNotesFromTab(tabId) {
           if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
           const tag = el.tagName?.toLowerCase() || "";
           const cls = (el.className || "").toString().toLowerCase();
-          return tag === "mat-icon" || cls.includes("material-icons") || cls.includes("mat-icon");
+          return (
+            tag === "mat-icon" ||
+            cls.includes("material-icons") ||
+            cls.includes("mat-icon")
+          );
         };
         const getCleanText = (node) => {
           let result = "";
           for (const child of node.childNodes) {
             if (child.nodeType === Node.TEXT_NODE) result += child.textContent;
             else if (child.nodeType === Node.ELEMENT_NODE) {
-              if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
+              if (child.tagName === "STYLE" || child.tagName === "SCRIPT")
+                continue;
               if (isIconElement(child)) continue;
               result += getCleanText(child);
             }
@@ -2012,7 +2869,11 @@ async function extractNotesFromTab(tabId) {
         // the live page is untouched. Plain-text years are never inside these
         // buttons, so they are left alone — this is robust where regex is not.
         const normalizeCitations = (clone) => {
-          const buttons = Array.from(clone.querySelectorAll("button.xap-inline-dialog, button[class*='xap-inline-dialog']"));
+          const buttons = Array.from(
+            clone.querySelectorAll(
+              "button.xap-inline-dialog, button[class*='xap-inline-dialog']",
+            ),
+          );
           const visited = new Set();
           for (const btn of buttons) {
             if (visited.has(btn)) continue;
@@ -2022,9 +2883,20 @@ async function extractNotesFromTab(tabId) {
             visited.add(btn);
             let sib = btn.nextSibling;
             while (sib) {
-              if (sib.nodeType === Node.TEXT_NODE && !sib.textContent.trim()) { sib = sib.nextSibling; continue; }
-              if (sib.nodeType === Node.ELEMENT_NODE && sib.matches?.("button.xap-inline-dialog, button[class*='xap-inline-dialog']")) {
-                group.push(sib); visited.add(sib); sib = sib.nextSibling; continue;
+              if (sib.nodeType === Node.TEXT_NODE && !sib.textContent.trim()) {
+                sib = sib.nextSibling;
+                continue;
+              }
+              if (
+                sib.nodeType === Node.ELEMENT_NODE &&
+                sib.matches?.(
+                  "button.xap-inline-dialog, button[class*='xap-inline-dialog']",
+                )
+              ) {
+                group.push(sib);
+                visited.add(sib);
+                sib = sib.nextSibling;
+                continue;
               }
               break;
             }
@@ -2035,31 +2907,59 @@ async function extractNotesFromTab(tabId) {
             // ("signaling" -> "signaling (20,21)"), but skip it if the text before
             // already ends in whitespace to avoid a double space.
             const prev = btn.previousSibling;
-            const prevEndsWS = prev && prev.nodeType === Node.TEXT_NODE && /\s$/.test(prev.textContent || "");
+            const prevEndsWS =
+              prev &&
+              prev.nodeType === Node.TEXT_NODE &&
+              /\s$/.test(prev.textContent || "");
             const lead = prevEndsWS ? "" : " ";
-            const replacement = document.createTextNode(nums.length ? `${lead}(${nums.join(",")})` : "");
+            const replacement = document.createTextNode(
+              nums.length ? `${lead}(${nums.join(",")})` : "",
+            );
             btn.parentNode.insertBefore(replacement, btn);
             for (const b of group) b.remove();
           }
         };
         const getCleanHtml = (node) => {
           const clone = node.cloneNode(true);
-          clone.querySelectorAll("style, script, mat-icon, .material-icons").forEach(s => s.remove());
+          clone
+            .querySelectorAll("style, script, mat-icon, .material-icons")
+            .forEach((s) => s.remove());
           normalizeCitations(clone);
           return clone.innerHTML;
         };
         // Text variant that also normalizes citations (clones first).
         const getCleanTextWithCitations = (node) => {
           const clone = node.cloneNode(true);
-          clone.querySelectorAll("style, script, mat-icon, .material-icons").forEach(s => s.remove());
+          clone
+            .querySelectorAll("style, script, mat-icon, .material-icons")
+            .forEach((s) => s.remove());
           normalizeCitations(clone);
           return getCleanText(clone);
         };
         const isChrome = (text) => {
-          if (/convert to source|转换为来源|轉換為來源|ソースに変換|소스로 변환|convertir en fuente|convertir en source|in quelle umwandeln|converter em fonte|converti in fonte/i.test(text) && text.length < 80) return true;
-          if (/saved\s+(responses?|notes?)\s+are|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i.test(text) && text.length < 80) return true;
-          if (/^(Studio|工作室|工作區|スタジオ|스튜디오|Estudio|Atelier|Labor|Estúdio)\s*[>›»]/i.test(text) && text.length < 40) return true;
-          if (/^(\d+\s*sources?|\d+\s*个?来源|\d+\s*個?來源)$/i.test(text)) return true;
+          if (
+            /convert to source|转换为来源|轉換為來源|ソースに変換|소스로 변환|convertir en fuente|convertir en source|in quelle umwandeln|converter em fonte|converti in fonte/i.test(
+              text,
+            ) &&
+            text.length < 80
+          )
+            return true;
+          if (
+            /saved\s+(responses?|notes?)\s+are|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i.test(
+              text,
+            ) &&
+            text.length < 80
+          )
+            return true;
+          if (
+            /^(Studio|工作室|工作區|スタジオ|스튜디오|Estudio|Atelier|Labor|Estúdio)\s*[>›»]/i.test(
+              text,
+            ) &&
+            text.length < 40
+          )
+            return true;
+          if (/^(\d+\s*sources?|\d+\s*个?来源|\d+\s*個?來源)$/i.test(text))
+            return true;
           return false;
         };
 
@@ -2084,8 +2984,12 @@ async function extractNotesFromTab(tabId) {
         const vh = window.innerHeight || document.documentElement.clientHeight;
         const vw = window.innerWidth || document.documentElement.clientWidth;
         const isOnScreen = (r) =>
-          r.width > 100 && r.height > 30 &&
-          r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
+          r.width > 100 &&
+          r.height > 30 &&
+          r.bottom > 0 &&
+          r.top < vh &&
+          r.right > 0 &&
+          r.left < vw;
         const bodySelectors = [
           // Studio note viewer (read-only saved responses AND notes).
           "studio-panel labs-tailwind-doc-viewer.note-editor",
@@ -2107,13 +3011,19 @@ async function extractNotesFromTab(tabId) {
               if (requireOnScreen && !isOnScreen(r)) return;
               const text = getCleanText(el).trim();
               if (text.length < 5 || isChrome(text)) return;
-              if (!best || text.length > getCleanText(best).trim().length) best = el;
+              if (!best || text.length > getCleanText(best).trim().length)
+                best = el;
             });
             if (best) {
               const text = getCleanTextWithCitations(best).trim();
               if (text.length > 5) {
                 debug.editorFound = sel + (requireOnScreen ? "" : " (any)");
-                return { content: text, html: getCleanHtml(best), method: "note-body:" + sel, debug };
+                return {
+                  content: text,
+                  html: getCleanHtml(best),
+                  method: "note-body:" + sel,
+                  debug,
+                };
               }
             }
           }
@@ -2126,13 +3036,25 @@ async function extractNotesFromTab(tabId) {
         // === STRATEGY 1: Banner-anchored ===
         // Find "Saved responses are view only" or similar banner
         let bannerEl = null;
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null);
+        const walker = document.createTreeWalker(
+          document.body,
+          NodeFilter.SHOW_ELEMENT,
+          null,
+        );
         let wNode;
         while ((wNode = walker.nextNode())) {
           const t = wNode.textContent?.trim() || "";
           if (t.length > 200 || t.length < 5) continue;
-          if (/saved\s+(responses?|notes?)\s+are\s+(view|read)|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i.test(t) ||
-              (t.length < 60 && /view[\-\s]*only|只读|唯讀|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt/i.test(t) && !/chat|source|聊天|來源|来源/i.test(t))) {
+          if (
+            /saved\s+(responses?|notes?)\s+are\s+(view|read)|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i.test(
+              t,
+            ) ||
+            (t.length < 60 &&
+              /view[\-\s]*only|只读|唯讀|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt/i.test(
+                t,
+              ) &&
+              !/chat|source|聊天|來源|来源/i.test(t))
+          ) {
             if (!bannerEl || t.length < bannerEl.textContent.length) {
               bannerEl = wNode;
             }
@@ -2152,10 +3074,12 @@ async function extractNotesFromTab(tabId) {
             if (!candidate?.parentElement) break;
             const children = Array.from(candidate.children);
             // Check if any sibling of the banner-containing child has real text
-            const bannerChild = children.find(c => c === bannerEl || c.contains(bannerEl));
+            const bannerChild = children.find(
+              (c) => c === bannerEl || c.contains(bannerEl),
+            );
             if (bannerChild) {
-              const siblings = children.filter(c => c !== bannerChild);
-              const hasContent = siblings.some(c => {
+              const siblings = children.filter((c) => c !== bannerChild);
+              const hasContent = siblings.some((c) => {
                 const t = getCleanText(c).trim();
                 return t.length > 50 && !isChrome(t);
               });
@@ -2178,7 +3102,9 @@ async function extractNotesFromTab(tabId) {
 
           // Collect all sibling children that are NOT the banner container
           const directChildren = Array.from(contentParent.children);
-          const bannerChild = directChildren.find(c => c === bannerEl || c.contains(bannerEl));
+          const bannerChild = directChildren.find(
+            (c) => c === bannerEl || c.contains(bannerEl),
+          );
           let contentParts = [];
           let htmlParts = [];
           for (const child of directChildren) {
@@ -2190,34 +3116,66 @@ async function extractNotesFromTab(tabId) {
             htmlParts.push(getCleanHtml(child));
           }
           if (contentParts.length > 0 && contentParts.join("").length > 20) {
-            return { content: contentParts.join("\n\n"), html: htmlParts.join(""), method: "after-banner-siblings", debug };
+            return {
+              content: contentParts.join("\n\n"),
+              html: htmlParts.join(""),
+              method: "after-banner-siblings",
+              debug,
+            };
           }
 
           // Deeper search — largest block anywhere in contentParent excluding banner
           const blocksAfter = [];
-          contentParent.querySelectorAll("div, p, section, article").forEach(el => {
-            if (bannerEl === el || bannerEl.contains(el) || el.contains(bannerEl)) return;
-            const text = getCleanText(el).trim();
-            if (text.length < 30 || isChrome(text)) return;
-            blocksAfter.push({ text, html: getCleanHtml(el), len: text.length });
-          });
+          contentParent
+            .querySelectorAll("div, p, section, article")
+            .forEach((el) => {
+              if (
+                bannerEl === el ||
+                bannerEl.contains(el) ||
+                el.contains(bannerEl)
+              )
+                return;
+              const text = getCleanText(el).trim();
+              if (text.length < 30 || isChrome(text)) return;
+              blocksAfter.push({
+                text,
+                html: getCleanHtml(el),
+                len: text.length,
+              });
+            });
           if (blocksAfter.length > 0) {
             blocksAfter.sort((a, b) => b.len - a.len);
-            return { content: blocksAfter[0].text, html: blocksAfter[0].html, method: "after-banner-largest", debug };
+            return {
+              content: blocksAfter[0].text,
+              html: blocksAfter[0].html,
+              method: "after-banner-largest",
+              debug,
+            };
           }
 
           // Strip parent
           const clone = contentParent.cloneNode(true);
-          clone.querySelectorAll("style, script, mat-icon, .material-icons").forEach(s => s.remove());
+          clone
+            .querySelectorAll("style, script, mat-icon, .material-icons")
+            .forEach((s) => s.remove());
           const toRemove = [];
-          clone.querySelectorAll("*").forEach(el => {
+          clone.querySelectorAll("*").forEach((el) => {
             const t = el.textContent?.trim() || "";
             if (isChrome(t)) toRemove.push(el);
           });
-          toRemove.forEach(el => { try { el.remove(); } catch {} });
+          toRemove.forEach((el) => {
+            try {
+              el.remove();
+            } catch {}
+          });
           const text = getCleanText(clone).trim();
           if (text.length > 30) {
-            return { content: text, html: clone.innerHTML.trim(), method: "banner-parent-stripped", debug };
+            return {
+              content: text,
+              html: clone.innerHTML.trim(),
+              method: "banner-parent-stripped",
+              debug,
+            };
           }
         }
 
@@ -2228,7 +3186,11 @@ async function extractNotesFromTab(tabId) {
         for (const el of allEls2) {
           const t = getCleanText(el).trim();
           if (t.length > 60) continue;
-          if (/^(Studio|工作室|工作區|スタジオ|스튜디오|Estudio|Atelier|Labor|Estúdio)\s*[>›»]\s*(Note|Saved|笔记|筆記|已保存|已儲存|メモ|保存済み|노트|저장됨|Nota|Guardado)/i.test(t)) {
+          if (
+            /^(Studio|工作室|工作區|スタジオ|스튜디오|Estudio|Atelier|Labor|Estúdio)\s*[>›»]\s*(Note|Saved|笔记|筆記|已保存|已儲存|メモ|保存済み|노트|저장됨|Nota|Guardado)/i.test(
+              t,
+            )
+          ) {
             breadcrumbEl = el;
             break;
           }
@@ -2242,16 +3204,23 @@ async function extractNotesFromTab(tabId) {
             if (!panel.parentElement) break;
             panel = panel.parentElement;
             const rect = panel.getBoundingClientRect();
-            if (rect.height > 300 && rect.width > 200 && rect.width < 900) break;
+            if (rect.height > 300 && rect.width > 200 && rect.width < 900)
+              break;
           }
 
           // Find note title then content after it
-          const headings = panel.querySelectorAll("h1, h2, h3, [role='heading']");
+          const headings = panel.querySelectorAll(
+            "h1, h2, h3, [role='heading']",
+          );
           let titleEl = null;
           for (const h of headings) {
             const ht = getCleanText(h).trim();
             if (ht.length < 3) continue;
-            if (ht === noteTitle || noteTitle.startsWith(ht) || ht.startsWith(noteTitle.substring(0, 20))) {
+            if (
+              ht === noteTitle ||
+              noteTitle.startsWith(ht) ||
+              ht.startsWith(noteTitle.substring(0, 20))
+            ) {
               titleEl = h;
               break;
             }
@@ -2259,8 +3228,12 @@ async function extractNotesFromTab(tabId) {
 
           // Extract content blocks from panel
           const blocks = [];
-          panel.querySelectorAll("div, p, section, article").forEach(el => {
-            if (titleEl && (el === titleEl || el.contains(titleEl) || titleEl.contains(el))) return;
+          panel.querySelectorAll("div, p, section, article").forEach((el) => {
+            if (
+              titleEl &&
+              (el === titleEl || el.contains(titleEl) || titleEl.contains(el))
+            )
+              return;
             if (el.contains(breadcrumbEl)) return;
             const text = getCleanText(el).trim();
             if (text.length < 30 || isChrome(text)) return;
@@ -2268,21 +3241,32 @@ async function extractNotesFromTab(tabId) {
           });
           if (blocks.length > 0) {
             blocks.sort((a, b) => b.len - a.len);
-            return { content: blocks[0].text, html: blocks[0].html, method: "breadcrumb-panel", debug };
+            return {
+              content: blocks[0].text,
+              html: blocks[0].html,
+              method: "breadcrumb-panel",
+              debug,
+            };
           }
         }
 
         // === STRATEGY 3: Title-anchored ===
         // Find the note title heading in the detail view and grab adjacent content
         if (noteTitle && noteTitle.length > 3) {
-          const headings = document.querySelectorAll("h1, h2, h3, h4, [role='heading']");
+          const headings = document.querySelectorAll(
+            "h1, h2, h3, h4, [role='heading']",
+          );
           let titleEl = null;
           for (const h of headings) {
             const ht = getCleanText(h).trim();
             if (!ht || ht.length < 3) continue;
             const rect = h.getBoundingClientRect();
             if (rect.width === 0 || rect.height === 0) continue;
-            if (ht === noteTitle || noteTitle.startsWith(ht) || ht.startsWith(noteTitle.substring(0, 15))) {
+            if (
+              ht === noteTitle ||
+              noteTitle.startsWith(ht) ||
+              ht.startsWith(noteTitle.substring(0, 15))
+            ) {
               titleEl = h; // prefer last match (detail usually rendered after list)
             }
           }
@@ -2298,15 +3282,27 @@ async function extractNotesFromTab(tabId) {
             }
 
             const blocks = [];
-            container.querySelectorAll("div, p, section, article").forEach(el => {
-              if (el === titleEl || el.contains(titleEl) || titleEl.contains(el)) return;
-              const text = getCleanText(el).trim();
-              if (text.length < 30 || isChrome(text)) return;
-              blocks.push({ text, html: getCleanHtml(el), len: text.length });
-            });
+            container
+              .querySelectorAll("div, p, section, article")
+              .forEach((el) => {
+                if (
+                  el === titleEl ||
+                  el.contains(titleEl) ||
+                  titleEl.contains(el)
+                )
+                  return;
+                const text = getCleanText(el).trim();
+                if (text.length < 30 || isChrome(text)) return;
+                blocks.push({ text, html: getCleanHtml(el), len: text.length });
+              });
             if (blocks.length > 0) {
               blocks.sort((a, b) => b.len - a.len);
-              return { content: blocks[0].text, html: blocks[0].html, method: "title-anchored", debug };
+              return {
+                content: blocks[0].text,
+                html: blocks[0].html,
+                method: "title-anchored",
+                debug,
+              };
             }
           }
         }
@@ -2342,14 +3338,19 @@ async function extractNotesFromTab(tabId) {
           if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
           const tag = el.tagName?.toLowerCase() || "";
           const cls = (el.className || "").toString().toLowerCase();
-          return tag === "mat-icon" || cls.includes("material-icons") || cls.includes("mat-icon");
+          return (
+            tag === "mat-icon" ||
+            cls.includes("material-icons") ||
+            cls.includes("mat-icon")
+          );
         };
         const getCleanText = (node) => {
           let result = "";
           for (const child of node.childNodes) {
             if (child.nodeType === Node.TEXT_NODE) result += child.textContent;
             else if (child.nodeType === Node.ELEMENT_NODE) {
-              if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
+              if (child.tagName === "STYLE" || child.tagName === "SCRIPT")
+                continue;
               if (isIconElement(child)) continue;
               result += getCleanText(child);
             }
@@ -2358,14 +3359,26 @@ async function extractNotesFromTab(tabId) {
         };
 
         // Try breadcrumb "Studio" link
-        const allEls = document.querySelectorAll("a, button, [role='button'], [role='link'], span");
+        const allEls = document.querySelectorAll(
+          "a, button, [role='button'], [role='link'], span",
+        );
         const studioLabels = [
-          "studio", "工作室", "工作區", "スタジオ", "스튜디오",
-          "estudio", "atelier", "labor", "estúdio",
+          "studio",
+          "工作室",
+          "工作區",
+          "スタジオ",
+          "스튜디오",
+          "estudio",
+          "atelier",
+          "labor",
+          "estúdio",
         ];
         for (const el of allEls) {
           const text = getCleanText(el).trim().toLowerCase();
-          if (studioLabels.includes(text) && (el.tagName === "A" || el.getAttribute("role") === "link")) {
+          if (
+            studioLabels.includes(text) &&
+            (el.tagName === "A" || el.getAttribute("role") === "link")
+          ) {
             el.click();
             return "breadcrumb-studio";
           }
@@ -2375,19 +3388,47 @@ async function extractNotesFromTab(tabId) {
         for (const btn of allEls) {
           const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
           const raw = (btn.textContent || "").trim().toLowerCase();
-          if (aria.includes("back") || aria.includes("close") || aria.includes("返回") || aria.includes("关闭") || aria.includes("關閉") ||
-              aria.includes("戻る") || aria.includes("閉じる") || aria.includes("뒤로") || aria.includes("닫기") ||
-              aria.includes("volver") || aria.includes("cerrar") || aria.includes("retour") || aria.includes("fermer") ||
-              aria.includes("zurück") || aria.includes("schließen") || aria.includes("voltar") || aria.includes("fechar") ||
-              raw === "arrow_back" || raw === "close" || raw === "返回" || raw === "关闭" || raw === "關閉" ||
-              raw === "戻る" || raw === "閉じる" || raw === "뒤로" || raw === "닫기") {
+          if (
+            aria.includes("back") ||
+            aria.includes("close") ||
+            aria.includes("返回") ||
+            aria.includes("关闭") ||
+            aria.includes("關閉") ||
+            aria.includes("戻る") ||
+            aria.includes("閉じる") ||
+            aria.includes("뒤로") ||
+            aria.includes("닫기") ||
+            aria.includes("volver") ||
+            aria.includes("cerrar") ||
+            aria.includes("retour") ||
+            aria.includes("fermer") ||
+            aria.includes("zurück") ||
+            aria.includes("schließen") ||
+            aria.includes("voltar") ||
+            aria.includes("fechar") ||
+            raw === "arrow_back" ||
+            raw === "close" ||
+            raw === "返回" ||
+            raw === "关闭" ||
+            raw === "關閉" ||
+            raw === "戻る" ||
+            raw === "閉じる" ||
+            raw === "뒤로" ||
+            raw === "닫기"
+          ) {
             btn.click();
             return "back-button";
           }
         }
 
         // Fallback: Escape
-        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+        document.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Escape",
+            code: "Escape",
+            bubbles: true,
+          }),
+        );
         return "escape";
       },
     });
@@ -2408,7 +3449,7 @@ async function backwardSync(collectionId, customTags) {
   try {
     const mappingsRes = await getMappings();
     const mapping = (mappingsRes?.data || []).find(
-      (m) => m.collectionId === collectionId
+      (m) => m.collectionId === collectionId,
     );
     if (mapping?.notebookId) preferredNotebookId = mapping.notebookId;
   } catch {
@@ -2517,49 +3558,70 @@ async function getSourceState(tabId) {
             else if (c.nodeType === 1) {
               const tag = c.tagName?.toLowerCase() || "";
               const cls = (c.className || "").toString().toLowerCase();
-              if (tag === "mat-icon" || cls.includes("material-icons") || cls.includes("mat-icon")) continue;
+              if (
+                tag === "mat-icon" ||
+                cls.includes("material-icons") ||
+                cls.includes("mat-icon")
+              )
+                continue;
               t += getCleanText(c);
             }
           }
           return t.trim();
         };
-        const inDialog = (el) => !!el.closest('[role="dialog"], mat-dialog-container');
+        const inDialog = (el) =>
+          !!el.closest('[role="dialog"], mat-dialog-container');
 
         // Count strategy 1: explicit "N sources" text (virtualization-proof).
         let countFromText = null;
-        const countRe = /(\d+)\s*(sources?|来源|來源|ソース|소스|출처|fuentes?|quellen?|fontes?|fonti|bronnen|sumber)/i;
-        for (const el of document.querySelectorAll('span, div, p, h1, h2, h3, button, [role="button"], [aria-label]')) {
+        const countRe =
+          /(\d+)\s*(sources?|来源|來源|ソース|소스|출처|fuentes?|quellen?|fontes?|fonti|bronnen|sumber)/i;
+        for (const el of document.querySelectorAll(
+          'span, div, p, h1, h2, h3, button, [role="button"], [aria-label]',
+        )) {
           if (inDialog(el)) continue;
           const text = getCleanText(el);
           if (text.length > 60) continue;
-          const m = text.match(countRe) || (el.getAttribute("aria-label") || "").match(countRe);
+          const m =
+            text.match(countRe) ||
+            (el.getAttribute("aria-label") || "").match(countRe);
           if (m) {
             const n = parseInt(m[1], 10);
-            if (!isNaN(n)) countFromText = countFromText == null ? n : Math.max(countFromText, n);
+            if (!isNaN(n))
+              countFromText =
+                countFromText == null ? n : Math.max(countFromText, n);
           }
         }
 
         // Count strategy 2: source rows.
         const rowSelectors = [
           '[role="list"] [role="listitem"]',
-          'mat-list-item',
+          "mat-list-item",
           '[class*="source"][class*="item"]',
           '[class*="source-list"] > *',
           '[aria-label*="source" i] input[type="checkbox"]',
         ];
         let bestRowCount = 0;
         for (const sel of rowSelectors) {
-          const n = [...document.querySelectorAll(sel)].filter((el) => !inDialog(el)).length;
+          const n = [...document.querySelectorAll(sel)].filter(
+            (el) => !inDialog(el),
+          ).length;
           if (n > bestRowCount) bestRowCount = n;
         }
 
-        let count = null, method = null;
-        if (countFromText != null) { count = countFromText; method = "text"; }
-        else if (bestRowCount > 0) { count = bestRowCount; method = "rows"; }
+        let count = null,
+          method = null;
+        if (countFromText != null) {
+          count = countFromText;
+          method = "text";
+        } else if (bestRowCount > 0) {
+          count = bestRowCount;
+          method = "rows";
+        }
 
         // Busy: any processing spinner / progress indicator OUTSIDE the dialog.
         const busyEls = document.querySelectorAll(
-          'mat-spinner, mat-progress-spinner, mat-progress-bar, [role="progressbar"], .mdc-circular-progress, [class*="spinner"], [class*="loading"], [aria-busy="true"]'
+          'mat-spinner, mat-progress-spinner, mat-progress-bar, [role="progressbar"], .mdc-circular-progress, [class*="spinner"], [class*="loading"], [aria-busy="true"]',
         );
         let busy = false;
         for (const el of busyEls) {
@@ -2602,9 +3664,11 @@ async function getSourceNames(tabId) {
     const r = await chrome.scripting.executeScript({
       target: { tabId },
       func: () => {
-        const inDialog = (el) => !!el.closest('[role="dialog"], mat-dialog-container');
-        const rows = [...document.querySelectorAll(".single-source-container")]
-          .filter((el) => !inDialog(el));
+        const inDialog = (el) =>
+          !!el.closest('[role="dialog"], mat-dialog-container');
+        const rows = [
+          ...document.querySelectorAll(".single-source-container"),
+        ].filter((el) => !inDialog(el));
         // Panel not open / not rendered → signal "unreadable", don't report 0.
         if (rows.length === 0) return null;
 
@@ -2612,20 +3676,33 @@ async function getSourceNames(tabId) {
           if (!src) return null;
           const m = src.match(/[?&]domain=([^&]+)/);
           if (!m) return null;
-          try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+          try {
+            return decodeURIComponent(m[1]);
+          } catch {
+            return m[1];
+          }
         };
 
-        return rows.map((row) => {
-          // Full untruncated name: prefer the title element's aria-label.
-          const titleEl =
-            row.querySelector('.source-title[aria-label]') ||
-            row.querySelector('[aria-label]');
-          const label = (titleEl?.getAttribute("aria-label") || row.textContent || "")
-            .replace(/more_vert\s*$/i, "")
-            .trim();
-          const favSrc = row.querySelector('img.favicon-icon, [class*="favicon"]')?.getAttribute("src") || "";
-          return { label, faviconDomain: decodeFaviconDomain(favSrc) };
-        }).filter((s) => s.label || s.faviconDomain);
+        return rows
+          .map((row) => {
+            // Full untruncated name: prefer the title element's aria-label.
+            const titleEl =
+              row.querySelector(".source-title[aria-label]") ||
+              row.querySelector("[aria-label]");
+            const label = (
+              titleEl?.getAttribute("aria-label") ||
+              row.textContent ||
+              ""
+            )
+              .replace(/more_vert\s*$/i, "")
+              .trim();
+            const favSrc =
+              row
+                .querySelector('img.favicon-icon, [class*="favicon"]')
+                ?.getAttribute("src") || "";
+            return { label, faviconDomain: decodeFaviconDomain(favSrc) };
+          })
+          .filter((s) => s.label || s.faviconDomain);
       },
     });
     return r?.[0]?.result ?? null;
@@ -2677,8 +3754,11 @@ function nameStillPresent(stored, liveNormalized) {
     if (live === n) return true;
 
     const shorter = n.length <= live.length ? n : live;
-    const longer  = n.length <= live.length ? live : n;
-    if (shorter.length >= 6 && (longer.startsWith(shorter) || longer.includes(shorter))) {
+    const longer = n.length <= live.length ? live : n;
+    if (
+      shorter.length >= 6 &&
+      (longer.startsWith(shorter) || longer.includes(shorter))
+    ) {
       return true;
     }
 
@@ -2726,24 +3806,38 @@ async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
   // list/count is mid-update and would falsely look like deletions.
   const liveState = await getSourceState(tabId);
   if (liveState && liveState.busy) {
-    console.log(`[n2z] Reconcile ${syncKey}: notebook busy ingesting — keeping all ${keys.length} markers.`);
+    console.log(
+      `[n2z] Reconcile ${syncKey}: notebook busy ingesting — keeping all ${keys.length} markers.`,
+    );
     return keys;
   }
 
   const liveSources = await getSourceNames(tabId); // [{label, faviconDomain}] | null
   if (liveSources == null) {
-    console.log(`[n2z] Reconcile ${syncKey}: Sources panel not readable — keeping all ${keys.length} markers.`);
+    console.log(
+      `[n2z] Reconcile ${syncKey}: Sources panel not readable — keeping all ${keys.length} markers.`,
+    );
     return keys; // panel not open / unreadable — never prune blind
   }
 
   // Build live lookup sets for exact matching.
-  const liveLabels  = new Set(liveSources.map((s) => String(s.label || "").trim()).filter(Boolean));
-  const liveDomains = new Set(liveSources.map((s) => normalizeSourceUrl(s.faviconDomain)).filter(Boolean));
-  const liveNormalized = liveSources.map((s) => normalizeSourceName(s.label)).filter(Boolean);
+  const liveLabels = new Set(
+    liveSources.map((s) => String(s.label || "").trim()).filter(Boolean),
+  );
+  const liveDomains = new Set(
+    liveSources.map((s) => normalizeSourceUrl(s.faviconDomain)).filter(Boolean),
+  );
+  const liveNormalized = liveSources
+    .map((s) => normalizeSourceName(s.label))
+    .filter(Boolean);
 
   const nameBearingKeys = keys.filter((k) => {
     const e = registry[k];
-    return e && typeof e === "object" && (e.label || e.name || e.url || e.faviconDomain);
+    return (
+      e &&
+      typeof e === "object" &&
+      (e.label || e.name || e.url || e.faviconDomain)
+    );
   });
 
   // A marker's source is "present" if ANY of its identifiers match a live
@@ -2764,10 +3858,14 @@ async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
   const nameAbsent = nameBearingKeys.filter((k) => !stillPresent(registry[k]));
 
   // Authoritative source count (prefers NotebookLM's "N sources" text).
-  const countState = liveState && liveState.count != null
-    ? liveState
-    : await getSourceState(tabId);
-  const liveCount = countState && countState.count != null ? countState.count : liveSources.length;
+  const countState =
+    liveState && liveState.count != null
+      ? liveState
+      : await getSourceState(tabId);
+  const liveCount =
+    countState && countState.count != null
+      ? countState.count
+      : liveSources.length;
 
   // POSITIVE-SIGNAL pruning: only remove markers when the notebook genuinely
   // has FEWER sources than we have markers — i.e. something was really deleted.
@@ -2779,9 +3877,9 @@ async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
   // Diagnostic: surface the exact comparison so mismatches are debuggable.
   console.log(
     `[n2z] Reconcile ${syncKey}: ${nameBearingKeys.length} markers, liveCount=${liveCount} ` +
-    `(rows=${liveSources.length}), name-absent=${nameAbsent.length}, shortfall=${shortfall}\n` +
-    `  stored: ${nameBearingKeys.map((k) => JSON.stringify(registry[k].label || registry[k].url || registry[k].name)).join(", ")}\n` +
-    `  live:   ${liveSources.map((s) => JSON.stringify(s.label || s.faviconDomain)).join(", ")}`
+      `(rows=${liveSources.length}), name-absent=${nameAbsent.length}, shortfall=${shortfall}\n` +
+      `  stored: ${nameBearingKeys.map((k) => JSON.stringify(registry[k].label || registry[k].url || registry[k].name)).join(", ")}\n` +
+      `  live:   ${liveSources.map((s) => JSON.stringify(s.label || s.faviconDomain)).join(", ")}`,
   );
 
   if (shortfall <= 0 || nameAbsent.length === 0) return keys; // nothing provably removed
@@ -2795,14 +3893,21 @@ async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
   // Mirror the prune into the durable Zotero mapping (the source of truth the
   // checkmarks read), so removed sources clear there too.
   try {
-    const m = await zoteroRequest("/n2z/mapping", { action: "get", collectionId });
+    const m = await zoteroRequest("/n2z/mapping", {
+      action: "get",
+      collectionId,
+    });
     if (m?.success && m.data && m.data.notebookId === notebookId) {
       for (const k of toPrune) delete m.data.syncedItemHashes?.[k];
       await zoteroRequest("/n2z/mapping", { action: "set", mapping: m.data });
     }
-  } catch { /* best-effort; local cache already pruned */ }
+  } catch {
+    /* best-effort; local cache already pruned */
+  }
 
-  console.log(`[n2z] Reconcile pruned ${toPrune.length} removed source(s); ${Object.keys(registry).length} remain.`);
+  console.log(
+    `[n2z] Reconcile pruned ${toPrune.length} removed source(s); ${Object.keys(registry).length} remain.`,
+  );
   return Object.keys(registry);
 }
 
@@ -2811,7 +3916,9 @@ async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
  * The popup may not be open, so we ignore errors.
  */
 function broadcastProgress(payload) {
-  chrome.runtime.sendMessage({ type: "n2z-sync-progress", ...payload }).catch(() => {});
+  chrome.runtime
+    .sendMessage({ type: "n2z-sync-progress", ...payload })
+    .catch(() => {});
 }
 
 /**
@@ -2819,7 +3926,11 @@ function broadcastProgress(payload) {
  * timeout elapses. Returns the final result (the last value the predicate
  * returned). Used to replace fixed sleeps that wait on DOM transitions.
  */
-async function waitForInTab(tabId, predicateFn, { timeoutMs = 3000, intervalMs = 100, args = [] } = {}) {
+async function waitForInTab(
+  tabId,
+  predicateFn,
+  { timeoutMs = 3000, intervalMs = 100, args = [] } = {},
+) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
   while (Date.now() < deadline) {
@@ -2861,12 +3972,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Durable source of truth for "already uploaded": the per-item record
         // stored in the Zotero mapping (mapping.syncedItemHashes), keyed by
         // Zotero itemKey. Survives popup reopen; never touched by DOM reads.
-        const m = await zoteroRequest("/n2z/mapping", { action: "get", collectionId: message.collectionId });
-        const hashes = m?.success && m.data ? (m.data.syncedItemHashes || {}) : {};
+        const m = await zoteroRequest("/n2z/mapping", {
+          action: "get",
+          collectionId: message.collectionId,
+        });
+        const hashes =
+          m?.success && m.data ? m.data.syncedItemHashes || {} : {};
         // Only count items mapped to the CURRENTLY connected notebook, so the
         // checks reflect the notebook the user is actually looking at.
         const wantNb = message.notebookId || null;
-        const sameNb = !wantNb || !m?.data?.notebookId || m.data.notebookId === wantNb;
+        const sameNb =
+          !wantNb || !m?.data?.notebookId || m.data.notebookId === wantNb;
         return { success: true, data: sameNb ? Object.keys(hashes) : [] };
       }
 
@@ -2874,11 +3990,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return removeMapping(message.collectionId);
 
       case "n2z-forward-sync":
-        return forwardSync(message.collectionId, message.collectionName, message.selectedItemKeys, message.libraryId, message.libraryName);
+        return forwardSync(
+          message.collectionId,
+          message.collectionName,
+          message.selectedItemKeys,
+          message.libraryId,
+          message.libraryName,
+          message.tag,
+        );
 
       case "n2z-sync-status": {
         const prog = syncProgress.get(message.tabId);
-        return prog ? { success: true, data: prog } : { success: false, error: "No sync in progress" };
+        return prog
+          ? { success: true, data: prog }
+          : { success: false, error: "No sync in progress" };
       }
 
       case "n2z-cancel-sync": {
@@ -2920,23 +4045,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         };
       }
 
+      case "n2z-get-tags":
+        return getTags(message.libraryId);
+
       case "n2z-get-items":
-        return getExportableItems(message.collectionId);
+        return getExportableItems({
+          collectionId: message.collectionId,
+          libraryId: message.libraryId,
+          tag: message.tag,
+        });
 
       case "n2z-inspect-upload-dialog": {
         const { tab: inspectTab } = await resolveNotebookLMTab();
-        if (!inspectTab) return { success: false, error: "No NotebookLM tab found" };
+        if (!inspectTab)
+          return { success: false, error: "No NotebookLM tab found" };
         const r = await chrome.scripting.executeScript({
           target: { tabId: inspectTab.id },
           func: () => {
-            const dialog = document.querySelector('[role="dialog"]') || document.body;
-            const inputs = [...document.querySelectorAll('input')].map(i => ({
-              type: i.type, id: i.id, name: i.name, cls: i.className.slice(0,80),
-              accept: i.accept, visible: window.getComputedStyle(i).display !== 'none',
+            const dialog =
+              document.querySelector('[role="dialog"]') || document.body;
+            const inputs = [...document.querySelectorAll("input")].map((i) => ({
+              type: i.type,
+              id: i.id,
+              name: i.name,
+              cls: i.className.slice(0, 80),
+              accept: i.accept,
+              visible: window.getComputedStyle(i).display !== "none",
             }));
-            const buttons = [...document.querySelectorAll('button, [role="button"]')]
-              .filter(e => { const s = window.getComputedStyle(e); return s.display !== 'none' && s.visibility !== 'hidden'; })
-              .map(e => ({ tag: e.tagName, text: e.textContent?.trim().slice(0,60), cls: e.className?.slice(0,60) }));
+            const buttons = [
+              ...document.querySelectorAll('button, [role="button"]'),
+            ]
+              .filter((e) => {
+                const s = window.getComputedStyle(e);
+                return s.display !== "none" && s.visibility !== "hidden";
+              })
+              .map((e) => ({
+                tag: e.tagName,
+                text: e.textContent?.trim().slice(0, 60),
+                cls: e.className?.slice(0, 60),
+              }));
             return {
               dialogHTML: dialog.innerHTML.slice(0, 4000),
               inputs,
@@ -2954,8 +4101,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // remaining synced item keys from the durable Zotero mapping.
         const { tab: recTab } = await resolveNotebookLMTab();
         const readMappingKeys = async () => {
-          const m = await zoteroRequest("/n2z/mapping", { action: "get", collectionId: message.collectionId });
-          const sameNb = m?.data && (!message.notebookId || m.data.notebookId === message.notebookId);
+          const m = await zoteroRequest("/n2z/mapping", {
+            action: "get",
+            collectionId: message.collectionId,
+          });
+          const sameNb =
+            m?.data &&
+            (!message.notebookId || m.data.notebookId === message.notebookId);
           return sameNb ? Object.keys(m.data.syncedItemHashes || {}) : [];
         };
         // Never probe the tab while a sync is uploading to it — a concurrent
@@ -2963,7 +4115,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!recTab || activeSyncs.has(recTab.id)) {
           return { success: true, data: await readMappingKeys() };
         }
-        await reconcileSyncedKeys(message.collectionId, message.notebookId, recTab.id);
+        await reconcileSyncedKeys(
+          message.collectionId,
+          message.notebookId,
+          recTab.id,
+        );
         return { success: true, data: await readMappingKeys() };
       }
 
@@ -2972,18 +4128,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // durable per-item record in the Zotero mapping (the source of truth).
         const allKeys = await chrome.storage.local.get(null);
         const keysToRemove = Object.keys(allKeys).filter(
-          (k) => k.startsWith(`sync_${message.collectionId}_`) || k === `sync_${message.collectionId}`
+          (k) =>
+            k.startsWith(`sync_${message.collectionId}_`) ||
+            k === `sync_${message.collectionId}`,
         );
         if (keysToRemove.length > 0) {
           await chrome.storage.local.remove(keysToRemove);
         }
         try {
-          const m = await zoteroRequest("/n2z/mapping", { action: "get", collectionId: message.collectionId });
+          const m = await zoteroRequest("/n2z/mapping", {
+            action: "get",
+            collectionId: message.collectionId,
+          });
           if (m?.success && m.data) {
             m.data.syncedItemHashes = {};
-            await zoteroRequest("/n2z/mapping", { action: "set", mapping: m.data });
+            await zoteroRequest("/n2z/mapping", {
+              action: "set",
+              mapping: m.data,
+            });
           }
-        } catch { /* best-effort */ }
+        } catch {
+          /* best-effort */
+        }
         return { success: true, message: "Sync state cleared" };
       }
 
@@ -3014,7 +4180,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               },
             });
           }
-          return { success: true, data: notes, notebookId, debug: notes.length === 0 ? `Page: ${nlmTab.title}` : undefined };
+          return {
+            success: true,
+            data: notes,
+            notebookId,
+            debug: notes.length === 0 ? `Page: ${nlmTab.title}` : undefined,
+          };
         } catch (e) {
           return { success: false, error: e.message };
         }
@@ -3023,12 +4194,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "n2z-get-cached-notes": {
         // Return previously-extracted notes for the active notebook, if any.
         const { tab: cacheTab } = await resolveNotebookLMTab();
-        const notebookId = cacheTab ? extractNotebookIdFromUrl(cacheTab.url) : "";
-        if (!notebookId) return { success: false, error: "No NotebookLM tab found" };
-        const stored = await chrome.storage.local.get(notesCacheKey(notebookId));
+        const notebookId = cacheTab
+          ? extractNotebookIdFromUrl(cacheTab.url)
+          : "";
+        if (!notebookId)
+          return { success: false, error: "No NotebookLM tab found" };
+        const stored = await chrome.storage.local.get(
+          notesCacheKey(notebookId),
+        );
         const entry = stored[notesCacheKey(notebookId)];
         if (entry && Array.isArray(entry.notes)) {
-          return { success: true, data: entry.notes, notebookId, extractedAt: entry.extractedAt };
+          return {
+            success: true,
+            data: entry.notes,
+            notebookId,
+            extractedAt: entry.extractedAt,
+          };
         }
         return { success: true, data: [], notebookId };
       }
@@ -3036,7 +4217,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "n2z-import-selected-notes": {
         // Import pre-extracted notes (selected by user in popup) into Zotero
         const { tab: nlmTab2 } = await resolveNotebookLMTab();
-        const notebookId2 = nlmTab2 ? extractNotebookIdFromUrl(nlmTab2.url) : "";
+        const notebookId2 = nlmTab2
+          ? extractNotebookIdFromUrl(nlmTab2.url)
+          : "";
         const notes = message.notes || [];
         if (notes.length === 0) {
           return { success: false, error: "No notes to import" };
@@ -3056,11 +4239,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         const importResult = await importNotesToZotero(payloads);
         if (!importResult.success) {
-          return { success: false, error: importResult.error || "Failed to import notes" };
+          return {
+            success: false,
+            error: importResult.error || "Failed to import notes",
+          };
         }
 
-        const imported = (importResult.data || []).filter((r) => r !== null).length;
-        const skipped = (importResult.data || []).filter((r) => r === null).length;
+        const imported = (importResult.data || []).filter(
+          (r) => r !== null,
+        ).length;
+        const skipped = (importResult.data || []).filter(
+          (r) => r === null,
+        ).length;
 
         return {
           success: true,

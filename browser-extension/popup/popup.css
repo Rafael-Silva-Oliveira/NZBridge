@@ -86,11 +86,19 @@ body.dark {
 body {
   width: 380px;
   min-height: 280px;
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
   font-size: 13px;
   color: var(--text);
   background: var(--bg);
-  transition: background 0.2s ease, color 0.2s ease;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease;
 }
 
 /* Pinned (floating window) mode — fill the standalone window so the
@@ -165,7 +173,9 @@ header h1 {
   line-height: 1;
   border-radius: var(--radius-sm);
   opacity: 0.75;
-  transition: opacity 0.15s, background 0.15s;
+  transition:
+    opacity 0.15s,
+    background 0.15s;
 }
 .theme-toggle:hover {
   opacity: 1;
@@ -189,7 +199,9 @@ header h1 {
   height: 9px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  transition: background 0.2s, box-shadow 0.2s;
+  transition:
+    background 0.2s,
+    box-shadow 0.2s;
 }
 
 .dot.connected::after {
@@ -304,7 +316,10 @@ header h1 {
   white-space: nowrap;
   color: var(--text-muted);
   cursor: pointer;
-  transition: color 0.15s, background 0.15s, box-shadow 0.15s;
+  transition:
+    color 0.15s,
+    background 0.15s,
+    box-shadow 0.15s;
 }
 
 .tab:hover {
@@ -339,6 +354,45 @@ header h1 {
   margin-bottom: 12px;
 }
 
+.mode-toggle-field {
+  margin-bottom: 10px;
+}
+
+.mode-toggle {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-muted);
+  border-radius: var(--radius-lg);
+}
+
+.mode-option {
+  flex: 1 1 auto;
+  padding: 5px 8px;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    background 0.15s,
+    box-shadow 0.15s;
+}
+
+.mode-option:hover {
+  color: var(--text);
+}
+
+.mode-option.active {
+  color: var(--accent);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-sm);
+}
+
 .field label {
   display: block;
   font-size: 11px;
@@ -359,7 +413,9 @@ header h1 {
   font-size: 13px;
   background: var(--bg-input);
   color: var(--text);
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 
 .field select:focus,
@@ -404,7 +460,9 @@ header h1 {
   font-size: 13px;
   background: var(--bg-input);
   color: var(--text);
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
 }
 .searchable-input::placeholder {
   color: var(--text-muted);
@@ -463,7 +521,10 @@ header h1 {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, transform 0.05s;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    transform 0.05s;
 }
 
 .btn:active:not(:disabled) {
@@ -544,9 +605,18 @@ body.dark .btn.primary:hover:not(:disabled) {
 }
 
 @keyframes indeterminate {
-  0% { width: 0%; margin-left: 0; }
-  50% { width: 40%; margin-left: 30%; }
-  100% { width: 0%; margin-left: 100%; }
+  0% {
+    width: 0%;
+    margin-left: 0;
+  }
+  50% {
+    width: 40%;
+    margin-left: 30%;
+  }
+  100% {
+    width: 0%;
+    margin-left: 100%;
+  }
 }
 
 .progress-footer {
@@ -619,7 +689,9 @@ body.dark .btn.primary:hover:not(:disabled) {
   color: var(--error-fg);
   background: var(--error-bg);
   cursor: pointer;
-  transition: background 0.15s, opacity 0.15s;
+  transition:
+    background 0.15s,
+    opacity 0.15s;
 }
 .btn.cancel:hover:not(:disabled) {
   background: var(--error-border);
@@ -801,7 +873,9 @@ body.dark .btn.primary:hover:not(:disabled) {
   font-size: 16px;
   line-height: 1;
   flex-shrink: 0;
-  transition: color 0.15s, background 0.15s;
+  transition:
+    color 0.15s,
+    background 0.15s;
 }
 
 .mapping-delete:hover {
@@ -1071,7 +1145,9 @@ body.dark .btn.primary:hover:not(:disabled) {
   display: inline-block;
   border-radius: var(--radius);
   overflow: hidden;
-  transition: opacity 0.15s, transform 0.15s;
+  transition:
+    opacity 0.15s,
+    transform 0.15s;
 }
 
 .bmc-link:hover {

@@ -48,6 +48,11 @@ export interface FileData {
   filePath: string;
 }
 
+export interface TagInfo {
+  tag: string;
+  itemCount?: number;
+}
+
 export interface DebugItemInfo {
   itemId: number;
   title: string;
@@ -208,99 +213,209 @@ export async function getExportableItems(
   }
 
   const items = collection.getChildItems(false) as Zotero.Item[];
+  return buildExportableList(items, options?.tag);
+}
+
+/**
+ * Returns all tags present in a library, optionally with per-tag item counts.
+ * Handles several observed tag object shapes from different Zotero versions.
+ */
+export async function getTagsForLibrary(
+  libraryID?: number,
+): Promise<TagInfo[]> {
+  const libID = libraryID ?? Zotero.Libraries.userLibraryID;
+  let tags: any[] = [];
+  try {
+    tags = (await Zotero.Tags.getAll(libID)) || [];
+    ztoolkit.log(
+      `[n2z] Zotero.Tags.getAll(${libID}) returned ${tags.length} raw tag(s)`,
+    );
+  } catch (e: any) {
+    ztoolkit.log(`[n2z] getTagsForLibrary(${libID}) failed: ${e.message}`);
+  }
+
+  // Fallback: if the official API returns nothing, collect tags from every
+  // regular item in the library. This is slower but works around versions
+  // where getAll behaves unexpectedly.
+  if (tags.length === 0) {
+    try {
+      const s = new Zotero.Search() as any;
+      s.libraryID = libID;
+      s.addCondition("itemType", "isNot", "note");
+      const itemIDs = await s.search();
+      const items = (await Zotero.Items.getAsync(
+        itemIDs,
+      )) as unknown as Zotero.Item[];
+      const fallback: TagInfo[] = [];
+      for (const item of items) {
+        for (const t of item.getTags()) {
+          if (t.tag) fallback.push({ tag: t.tag });
+        }
+      }
+      ztoolkit.log(
+        `[n2z] tag fallback scan found ${fallback.length} tag occurrence(s) in ${items.length} item(s)`,
+      );
+      return dedupeAndSortTags(fallback);
+    } catch (fallbackErr: any) {
+      ztoolkit.log(`[n2z] tag fallback scan failed: ${fallbackErr.message}`);
+    }
+  }
+
+  const tagInfos: TagInfo[] = [];
+  for (const tag of tags) {
+    let name: string | undefined;
+    if (typeof tag === "string") {
+      name = tag;
+    } else if (tag && typeof tag === "object") {
+      name = tag.tag || tag.name || tag.tagName;
+    }
+    if (!name || typeof name !== "string") continue;
+    tagInfos.push({ tag: name });
+  }
+
+  return dedupeAndSortTags(tagInfos);
+}
+
+function dedupeAndSortTags(tagInfos: TagInfo[]): TagInfo[] {
+  const seen = new Set<string>();
+  const unique = tagInfos.filter((t) => {
+    if (seen.has(t.tag)) return false;
+    seen.add(t.tag);
+    return true;
+  });
+  unique.sort((a, b) => a.tag.localeCompare(b.tag));
+  ztoolkit.log(`[n2z] tags: ${tagInfos.length} raw → ${unique.length} unique`);
+  return unique;
+}
+
+/**
+ * Returns exportable items across a library that have a specific tag.
+ */
+export async function getExportableItemsByTag(
+  libraryID: number,
+  tag: string,
+): Promise<ExportableItem[]> {
+  const s = new Zotero.Search() as any;
+  s.libraryID = libraryID;
+  s.addCondition("tag", "is", tag);
+  const itemIDs = await s.search();
+  const items = (await Zotero.Items.getAsync(
+    itemIDs,
+  )) as unknown as Zotero.Item[];
+  return buildExportableList(items);
+}
+
+/**
+ * Builds an exportable-item list from a raw item array. When `tagFilter` is
+ * supplied, only items carrying that exact tag are considered.
+ */
+async function buildExportableList(
+  items: Zotero.Item[],
+  tagFilter?: string,
+): Promise<ExportableItem[]> {
   const exportable: ExportableItem[] = [];
 
   for (const item of items) {
     if (!item.isRegularItem()) continue;
-    if (options?.tag && !item.getTags().some((t) => t.tag === options.tag)) {
+    if (tagFilter && !item.getTags().some((t) => t.tag === tagFilter)) {
       continue;
     }
 
-    // Strategy 1: Look for a local file attachment (PDF, DOCX, etc.)
-    let foundFile = false;
-    const attachmentIDs = item.getAttachments();
-    for (const attID of attachmentIDs) {
-      const att = Zotero.Items.get(attID);
-      if (!att) continue;
-
-      const isFile =
-        att.isFileAttachment() ||
-        att.isImportedAttachment() ||
-        (att.isLinkedFileAttachment?.() ?? false) ||
-        (att.isStoredFileAttachment?.() ?? false);
-
-      if (!isFile) continue;
-
-      const contentType = att.attachmentContentType || "";
-      let filePath: string | false = false;
-      try {
-        filePath = await att.getFilePathAsync();
-      } catch {
-        continue;
-      }
-      if (!filePath) continue;
-
-      const filename = filePath.split(/[/\\]/).pop() || "unknown";
-      const ext = filename.split(".").pop()?.toLowerCase() || "";
-
-      const isExportableType =
-        EXPORTABLE_CONTENT_TYPES.includes(contentType) ||
-        ["pdf", "txt", "md", "markdown", "docx"].includes(ext);
-
-      if (!isExportableType) continue;
-
-      let fileExists = false;
-      let fileSize = 0;
-      try {
-        fileExists = await IOUtils.exists(filePath);
-        if (fileExists) {
-          const stat = await IOUtils.stat(filePath);
-          fileSize = stat.size ?? 0;
-        }
-      } catch {
-        // fall through
-      }
-      if (!fileExists) continue;
-
-      const effectiveContentType =
-        contentType || extToContentType(ext) || "application/octet-stream";
-
-      exportable.push({
-        itemId: item.id,
-        title: item.getField("title") as string,
-        attachmentId: att.id,
-        attachmentTitle: att.getField("title") as string,
-        contentType: effectiveContentType,
-        filename,
-        fileSize,
-        itemKey: item.key,
-        exportType: "file",
-      });
-      foundFile = true;
-      break;
-    }
-
-    // Strategy 2: No local file — export as URL source for NotebookLM
-    if (!foundFile) {
-      const url = getItemUrl(item);
-      if (url) {
-        exportable.push({
-          itemId: item.id,
-          title: item.getField("title") as string,
-          attachmentId: 0,
-          attachmentTitle: "",
-          contentType: "text/url",
-          filename: "",
-          fileSize: 0,
-          itemKey: item.key,
-          exportType: "url",
-          url,
-        });
-      }
+    const exported = await exportSingleItem(item);
+    if (exported) {
+      exportable.push(exported);
     }
   }
 
   return exportable;
+}
+
+/**
+ * Tries to turn one Zotero item into a single exportable payload.
+ * Prefers a local file attachment; falls back to a URL/DOI source.
+ */
+async function exportSingleItem(
+  item: Zotero.Item,
+): Promise<ExportableItem | null> {
+  // Strategy 1: Look for a local file attachment (PDF, DOCX, etc.)
+  const attachmentIDs = item.getAttachments();
+  for (const attID of attachmentIDs) {
+    const att = Zotero.Items.get(attID);
+    if (!att) continue;
+
+    const isFile =
+      att.isFileAttachment() ||
+      att.isImportedAttachment() ||
+      (att.isLinkedFileAttachment?.() ?? false) ||
+      (att.isStoredFileAttachment?.() ?? false);
+
+    if (!isFile) continue;
+
+    const contentType = att.attachmentContentType || "";
+    let filePath: string | false = false;
+    try {
+      filePath = await att.getFilePathAsync();
+    } catch {
+      continue;
+    }
+    if (!filePath) continue;
+
+    const filename = filePath.split(/[/\\]/).pop() || "unknown";
+    const ext = filename.split(".").pop()?.toLowerCase() || "";
+
+    const isExportableType =
+      EXPORTABLE_CONTENT_TYPES.includes(contentType) ||
+      ["pdf", "txt", "md", "markdown", "docx"].includes(ext);
+
+    if (!isExportableType) continue;
+
+    let fileExists = false;
+    let fileSize = 0;
+    try {
+      fileExists = await IOUtils.exists(filePath);
+      if (fileExists) {
+        const stat = await IOUtils.stat(filePath);
+        fileSize = stat.size ?? 0;
+      }
+    } catch {
+      // fall through
+    }
+    if (!fileExists) continue;
+
+    const effectiveContentType =
+      contentType || extToContentType(ext) || "application/octet-stream";
+
+    return {
+      itemId: item.id,
+      title: item.getField("title") as string,
+      attachmentId: att.id,
+      attachmentTitle: att.getField("title") as string,
+      contentType: effectiveContentType,
+      filename,
+      fileSize,
+      itemKey: item.key,
+      exportType: "file",
+    };
+  }
+
+  // Strategy 2: No local file — export as URL source for NotebookLM
+  const url = getItemUrl(item);
+  if (url) {
+    return {
+      itemId: item.id,
+      title: item.getField("title") as string,
+      attachmentId: 0,
+      attachmentTitle: "",
+      contentType: "text/url",
+      filename: "",
+      fileSize: 0,
+      itemKey: item.key,
+      exportType: "url",
+      url,
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -316,7 +431,9 @@ function getItemUrl(item: Zotero.Item): string | null {
   try {
     const url = item.getField("url") as string;
     if (url) candidates.push(url);
-  } catch {}
+  } catch {
+    /* ignore */
+  }
 
   // Attachment URLs
   const attachmentIDs = item.getAttachments();
@@ -326,18 +443,20 @@ function getItemUrl(item: Zotero.Item): string | null {
     try {
       const attUrl = att.getField("url") as string;
       if (attUrl) candidates.push(attUrl);
-    } catch {}
+    } catch {
+      /* ignore */
+    }
   }
 
   // DOI as last resort
   try {
     const doi = item.getField("DOI") as string;
     if (doi) {
-      candidates.push(
-        doi.startsWith("http") ? doi : `https://doi.org/${doi}`,
-      );
+      candidates.push(doi.startsWith("http") ? doi : `https://doi.org/${doi}`);
     }
-  } catch {}
+  } catch {
+    /* ignore */
+  }
 
   // Also try to construct a PMC link from PMCID if available
   try {
@@ -345,10 +464,14 @@ function getItemUrl(item: Zotero.Item): string | null {
     if (extra) {
       const pmcMatch = extra.match(/PMCID:\s*(PMC\d+)/i);
       if (pmcMatch) {
-        candidates.push(`https://pmc.ncbi.nlm.nih.gov/articles/${pmcMatch[1]}/`);
+        candidates.push(
+          `https://pmc.ncbi.nlm.nih.gov/articles/${pmcMatch[1]}/`,
+        );
       }
     }
-  } catch {}
+  } catch {
+    /* ignore */
+  }
 
   if (candidates.length === 0) return null;
 
