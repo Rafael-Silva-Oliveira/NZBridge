@@ -19,6 +19,10 @@ NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/
 
 > See NZBridge in action — full walkthrough of forward sync, backward sync, and the Zotero plugin installation.
 
+## Star History
+
+<img src="https://api.star-history.com/svg?repos=Rafael-Silva-Oliveira/NZBridge&type=Date" alt="NZBridge star history over time" width="600">
+
 ## Features
 
 ### Forward Sync (Zotero -> NotebookLM)
