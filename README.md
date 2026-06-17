@@ -15,13 +15,13 @@ NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/
 
 ## Demo
 
-[![Watch the demo on YouTube](https://img.shields.io/badge/YouTube-Watch%20Demo-red?style=for-the-badge&logo=youtube)](https://www.youtube.com/watch?v=RCJhwf-Kwto)
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=RCJhwf-Kwto"><img src="https://img.shields.io/badge/YouTube-Watch%20Demo-red?style=for-the-badge&logo=youtube" alt="Watch the demo on YouTube"></a>
+  <br><br>
+  <img src="https://api.star-history.com/svg?repos=Rafael-Silva-Oliveira/NZBridge&type=Date" alt="NZBridge star history over time" width="420">
+</p>
 
 > See NZBridge in action — full walkthrough of forward sync, backward sync, and the Zotero plugin installation.
-
-## Star History
-
-<img src="https://api.star-history.com/svg?repos=Rafael-Silva-Oliveira/NZBridge&type=Date" alt="NZBridge star history over time" width="600">
 
 ## Features
 
