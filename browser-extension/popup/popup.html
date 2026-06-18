@@ -233,12 +233,20 @@
         </select>
       </div>
       <div class="field">
-        <label for="custom-tags">Custom Tags (comma-separated)</label>
-        <input
-          type="text"
-          id="custom-tags"
-          placeholder="e.g. review, project-x"
-        />
+        <label for="custom-tags-input">Custom Tags</label>
+        <div class="tag-multiselect" id="custom-tags">
+          <div class="tag-chips" id="custom-tags-chips"></div>
+          <div class="searchable-select tag-search">
+            <input
+              type="text"
+              id="custom-tags-input"
+              class="searchable-input"
+              placeholder="Search or create a tag..."
+              autocomplete="off"
+            />
+            <div class="searchable-list tag-search-list hidden"></div>
+          </div>
+        </div>
       </div>
       <div id="found-notes" class="notes-list hidden">
         <div class="notes-header">
@@ -277,8 +285,26 @@
 
       <div class="update-section">
         <h3 class="update-version">
-          v0.4.1 <span class="update-tag current">Current</span>
+          v0.4.2 <span class="update-tag current">Current</span>
         </h3>
+        <ul class="update-list">
+          <li>
+            More reliable PDF uploads: a transient miss on the "Upload files"
+            button no longer fails a batch of sources. The click is now retried
+            automatically, so the files that previously needed a manual re-sync
+            go through on the first attempt
+          </li>
+          <li>
+            New tag picker on the To Zotero tab: pick from your existing
+            library/group tags in a searchable list and add them as chips, or
+            type a new tag and create it on the spot (new tags are marked with a
+            "+")
+          </li>
+        </ul>
+      </div>
+
+      <div class="update-section">
+        <h3 class="update-version">v0.4.1</h3>
         <ul class="update-list">
           <li>
             New "Search by" toggle on the To NotebookLM tab: choose between

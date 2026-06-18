@@ -11,6 +11,12 @@ async function init() {
   await checkConnection();
   await loadLibraries();
   setupSearchableSelects();
+  setupTagMultiSelect();
+  // Seed the import tag picker with the initially-selected library's tags.
+  const importLib0 = document.getElementById("import-library-select");
+  if (importLib0 && _tagMultiSelect) {
+    _tagMultiSelect.reloadForLibrary(parseInt(importLib0.value)).catch(() => {});
+  }
   await loadNotebookInfo();
   await loadMappings();
   setupEventListeners();
@@ -288,6 +294,194 @@ function makeSearchable(wrap, select) {
   // Expose a refresh hook so repopulation can reset the input.
   wrap._refresh = syncInputFromSelect;
   syncInputFromSelect();
+}
+
+// ─── Tag multi-select (To-Zotero import) ─────────────────────────────
+//
+// A chip-based multi-select for the import "Custom Tags" field. The dropdown
+// lists existing tags for the currently-selected import library (reusing
+// loadTagsForLibrary), filtered as the user types. Picking a tag adds it as a
+// removable chip. When the typed text matches no existing tag, a "+ Create"
+// row lets the user add a brand-new tag; new (not-yet-in-library) tags get a
+// "+" badge on their chip so they're visually distinct from existing ones.
+//
+// Exposes on the root element:
+//   .getSelectedTags()        → string[] of chosen tag names (order preserved)
+//   .reloadForLibrary(libId)  → refresh the available-tag list (keeps chips)
+//   .clear()                  → remove all chips
+let _tagMultiSelect = null;
+
+function setupTagMultiSelect() {
+  const root = document.getElementById("custom-tags");
+  if (!root) return;
+  const chipsBox = document.getElementById("custom-tags-chips");
+  const input = document.getElementById("custom-tags-input");
+  const list = root.querySelector(".tag-search-list");
+
+  // Insertion-ordered selection; value = true if the tag is NOT in the library
+  // (i.e. a freshly-created tag that gets the "+" badge).
+  const selected = new Map();
+  // Lowercased set of existing library tag names, for "exists?" checks.
+  let available = []; // [{ tag }]
+  let availableLower = new Set();
+
+  const norm = (t) => t.trim();
+
+  const renderChips = () => {
+    chipsBox.innerHTML = "";
+    for (const [tag, isNew] of selected) {
+      const chip = document.createElement("span");
+      chip.className = "tag-chip" + (isNew ? " is-new" : "");
+      const label = document.createElement("span");
+      label.className = "tag-chip-label";
+      label.textContent = tag;
+      chip.appendChild(label);
+      if (isNew) {
+        const badge = document.createElement("span");
+        badge.className = "tag-chip-badge";
+        badge.setAttribute("aria-label", "new tag");
+        badge.title = "New tag — will be created in Zotero on import";
+        chip.appendChild(badge);
+      }
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "tag-chip-remove";
+      remove.textContent = "×";
+      remove.title = "Remove tag";
+      remove.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        selected.delete(tag);
+        renderChips();
+        renderList(input.value);
+      });
+      chip.appendChild(remove);
+      chipsBox.appendChild(chip);
+    }
+    chipsBox.classList.toggle("empty", selected.size === 0);
+  };
+
+  const addTag = (tag, { isNew } = {}) => {
+    const name = norm(tag);
+    if (!name) return;
+    // Case-insensitive de-dupe against already-selected chips.
+    for (const existing of selected.keys()) {
+      if (existing.toLowerCase() === name.toLowerCase()) return;
+    }
+    const fresh =
+      isNew != null ? isNew : !availableLower.has(name.toLowerCase());
+    selected.set(name, fresh);
+    renderChips();
+    input.value = "";
+  };
+
+  const renderList = (query) => {
+    const q = norm(query).toLowerCase();
+    list.innerHTML = "";
+    let count = 0;
+
+    // "+ Create" row: shown when the query is non-empty and doesn't exactly
+    // match an existing tag or an already-selected chip.
+    if (q) {
+      const exactExisting = availableLower.has(q);
+      const exactSelected = [...selected.keys()].some(
+        (t) => t.toLowerCase() === q,
+      );
+      if (!exactExisting && !exactSelected) {
+        const row = document.createElement("div");
+        row.className = "searchable-option tag-create-option";
+        row.innerHTML = `<span class="tag-create-plus" aria-hidden="true"></span> Create "${escapeHtml(
+          norm(query),
+        )}"`;
+        row.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          addTag(query, { isNew: true });
+          renderList("");
+        });
+        list.appendChild(row);
+        count++;
+      }
+    }
+
+    for (const { tag } of available) {
+      if (q && !tag.toLowerCase().includes(q)) continue;
+      // Skip tags already chosen.
+      if ([...selected.keys()].some((t) => t.toLowerCase() === tag.toLowerCase()))
+        continue;
+      const row = document.createElement("div");
+      row.className = "searchable-option";
+      row.textContent = tag;
+      row.dataset.value = tag;
+      row.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        addTag(tag, { isNew: false });
+        renderList(input.value);
+      });
+      list.appendChild(row);
+      count++;
+    }
+
+    if (count === 0) {
+      const empty = document.createElement("div");
+      empty.className = "searchable-empty";
+      empty.textContent = q ? "No matches" : "No tags in this library";
+      list.appendChild(empty);
+    }
+  };
+
+  const openList = () => {
+    renderList(input.value);
+    list.classList.remove("hidden");
+  };
+  const closeList = () => list.classList.add("hidden");
+
+  input.addEventListener("focus", openList);
+  input.addEventListener("input", () => {
+    renderList(input.value);
+    list.classList.remove("hidden");
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      input.blur();
+      closeList();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const first = list.querySelector(".searchable-option");
+      if (first) first.dispatchEvent(new Event("mousedown"));
+      return;
+    }
+    // Backspace on an empty field removes the last chip (familiar combobox UX).
+    if (e.key === "Backspace" && !input.value && selected.size) {
+      const lastKey = [...selected.keys()].pop();
+      selected.delete(lastKey);
+      renderChips();
+      renderList("");
+    }
+  });
+  document.addEventListener("mousedown", (e) => {
+    if (!root.contains(e.target)) closeList();
+  });
+
+  root.getSelectedTags = () => [...selected.keys()];
+  root.clear = () => {
+    selected.clear();
+    renderChips();
+  };
+  root.reloadForLibrary = async (libraryId) => {
+    const tags = await loadTagsForLibrary(libraryId);
+    available = Array.isArray(tags) ? tags.filter((t) => t && t.tag) : [];
+    availableLower = new Set(available.map((t) => t.tag.toLowerCase()));
+    // Existing chips that now match a library tag lose their "new" badge.
+    for (const [tag] of selected) {
+      if (availableLower.has(tag.toLowerCase())) selected.set(tag, false);
+    }
+    renderChips();
+    if (!list.classList.contains("hidden")) renderList(input.value);
+  };
+
+  renderChips();
+  _tagMultiSelect = root;
 }
 
 // ─── Tab navigation ──────────────────────────────────────────────────
@@ -992,6 +1186,10 @@ function setupEventListeners() {
 
   importLibSel.addEventListener("change", () => {
     populateCollectionsForLibrary(importLibSel, importColSel);
+    if (_tagMultiSelect)
+      _tagMultiSelect
+        .reloadForLibrary(parseInt(importLibSel.value))
+        .catch(() => {});
     saveImportSelection();
   });
 
@@ -1455,11 +1653,7 @@ async function handleImportNotes() {
     return;
   }
 
-  const customTagsInput = document.getElementById("custom-tags").value;
-  const customTags = customTagsInput
-    .split(",")
-    .map((t) => t.trim())
-    .filter(Boolean);
+  const customTags = _tagMultiSelect ? _tagMultiSelect.getSelectedTags() : [];
 
   const importBtn = document.getElementById("btn-import");
   const resultDiv = document.getElementById("import-result");
