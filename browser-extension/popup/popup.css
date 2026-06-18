@@ -511,6 +511,117 @@ header h1 {
   text-align: center;
 }
 
+/* ─── Tag multi-select (import custom tags) ──────────────────────── */
+.tag-multiselect {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tag-chips.empty {
+  display: none;
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 550;
+  max-width: 100%;
+}
+.tag-chip.is-new {
+  background: var(--success-bg);
+  color: var(--success-fg);
+  border-color: var(--success-border);
+}
+.tag-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tag-chip-badge {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--success-fg);
+}
+.tag-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.12s, background 0.12s;
+}
+.tag-chip-remove:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.22);
+}
+.tag-create-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--success-fg);
+  font-weight: 550;
+}
+.tag-create-plus {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--success-fg);
+}
+
+/* Draw the "+" with two centered bars so it's pixel-centered regardless of the
+   font's glyph metrics (the text glyph rendered slightly high). */
+.tag-chip-badge::before,
+.tag-chip-badge::after,
+.tag-create-plus::before,
+.tag-create-plus::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: var(--success-bg);
+  border-radius: 1px;
+  transform: translate(-50%, -50%);
+}
+/* horizontal bar */
+.tag-chip-badge::before,
+.tag-create-plus::before {
+  width: 8px;
+  height: 2px;
+}
+/* vertical bar */
+.tag-chip-badge::after,
+.tag-create-plus::after {
+  width: 2px;
+  height: 8px;
+}
+
 /* ─── Buttons ────────────────────────────────────────────────────── */
 .btn {
   width: 100%;

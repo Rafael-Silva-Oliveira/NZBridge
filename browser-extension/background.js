@@ -39,6 +39,17 @@ const SETTLE_POLL_MS = 500; // poll cadence while waiting to settle
 const SETTLE_QUIET_MS = 1200; // require the count stable + not busy this long
 const SETTLE_FALLBACK_SLEEP_MS = 4000; // used only when the panel is unreadable
 
+// The "Upload files" button click can transiently miss when the dialog UI isn't
+// fully interactive yet (button not hit-testable, or rendered a frame late), so
+// the file chooser never opens. Rather than fail the whole batch on a single
+// miss, we re-read fresh coords and re-fire the trusted click a few times, each
+// with a short chooser timeout so a miss is detected fast instead of burning a
+// long budget. If every drop attempt still misses, the batch is retried wholesale
+// (a fresh dialog cycle), which is what a manual re-sync did by hand.
+const UPLOAD_CLICK_ATTEMPTS = 3; // trusted-click → file-chooser retries per drop
+const CHOOSER_ATTEMPT_TIMEOUT_MS = 5000; // per-attempt wait for Page.fileChooserOpened
+const BATCH_UPLOAD_ATTEMPTS = 3; // full drop+settle retries before giving up on a batch
+
 // ─── Zotero API helpers ──────────────────────────────────────────────
 
 // Chrome/Edge 142+ "Local Network Access" classifies the extension service
@@ -690,7 +701,6 @@ async function forwardSyncImpl(
           const batch = resolvedFiles.slice(bi, bi + FILE_BATCH_SIZE);
           const t0 = Date.now();
 
-          const before = await getSourceState(tab.id);
           const batchFileData = batch.map((p) => ({
             base64: p.fileData.base64,
             filename: p.fileData.filename,
@@ -705,51 +715,85 @@ async function forwardSyncImpl(
               : "Uploading 1 file";
           emitProgress("files", batchLabel, batchTitles);
 
-          const res = await injectFilesBatchViaCDP(tab.id, batchFileData);
-
-          // Wait for the batch to FINISH processing before the next one.
-          // Primary signal: the source count reaches before+N and holds steady
-          // for SETTLE_QUIET_MS. `busy` (a visible spinner) only EXTENDS the
-          // wait while the count hasn't been reached yet — we never block on it
-          // once the count is there, so a stray/unrelated spinner can't stall
-          // us for the whole timeout. Unreadable panel → fixed fallback sleep.
+          // Drop the batch and wait for it to land. We retry the whole cycle ONLY
+          // when the drop itself failed (res.success === false) — i.e. the click
+          // missed and the file chooser never opened, so provably ZERO files were
+          // added and re-dropping is safe. This is the reported bug, and re-opening
+          // a fresh dialog is exactly what a manual re-sync did by hand.
+          //
+          // We deliberately do NOT re-drop when the drop succeeded but the count
+          // didn't confirm in time (slow ingestion): re-dropping there could
+          // double-add files that were merely slow to land. Those are left
+          // "Upload not confirmed" and recovered on the next sync via syncedHashes
+          // (which only re-adds items NOT already marked synced). The Step-0
+          // stale-dialog cleanup in injectFilesBatchViaCDP closes any dialog a
+          // failed click attempt left open, so retries can't duplicate.
+          let ok = false;
+          let res = { success: false };
+          let before = { count: null };
+          let after = { count: null, busy: false, method: null };
           let landed = false;
-          if (before.count == null) {
-            await sleep(SETTLE_FALLBACK_SLEEP_MS);
-            landed = res.success; // best effort: trust that the input was set
-          } else {
-            const target = before.count + batch.length;
-            const deadline = Date.now() + SETTLE_TIMEOUT_MS;
-            let reachedSince = null;
-            while (Date.now() < deadline) {
-              const st = await getSourceState(tab.id);
-              const reached = st.count != null && st.count >= target;
-              if (reached) {
-                reachedSince = reachedSince ?? Date.now();
-                if (Date.now() - reachedSince >= SETTLE_QUIET_MS) {
-                  landed = true;
-                  break;
-                }
+          let attempts = 0;
+          for (let a = 1; a <= BATCH_UPLOAD_ATTEMPTS; a++) {
+            // Cancel checkpoint between attempts (never mid-drop).
+            if (a > 1 && cancelledSyncs.has(tab.id)) break;
+            attempts = a;
+
+            before = await getSourceState(tab.id);
+            res = await injectFilesBatchViaCDP(tab.id, batchFileData);
+
+            // Only wait for the count to climb if the drop actually reported
+            // success — otherwise no files were added and a 45s wait is wasted.
+            landed = false;
+            if (res.success) {
+              if (before.count == null) {
+                await sleep(SETTLE_FALLBACK_SLEEP_MS);
+                landed = true; // best effort: panel unreadable, trust the drop
               } else {
-                reachedSince = null;
+                const target = before.count + batch.length;
+                const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+                let reachedSince = null;
+                while (Date.now() < deadline) {
+                  const st = await getSourceState(tab.id);
+                  const reached = st.count != null && st.count >= target;
+                  if (reached) {
+                    reachedSince = reachedSince ?? Date.now();
+                    if (Date.now() - reachedSince >= SETTLE_QUIET_MS) {
+                      landed = true;
+                      break;
+                    }
+                  } else {
+                    reachedSince = null;
+                  }
+                  await sleep(SETTLE_POLL_MS);
+                }
               }
-              await sleep(SETTLE_POLL_MS);
             }
+
+            after = await getSourceState(tab.id);
+            // Confirmed only when the full batch landed (count reached target) or
+            // the panel was unreadable and the drop reported success. We don't
+            // mark synced on a partial — better to re-sync the whole batch later
+            // (a re-sync only re-adds items NOT in syncedHashes) than to falsely
+            // skip a missing file.
+            const fullTarget =
+              before.count != null ? before.count + batch.length : null;
+            ok =
+              (before.count == null && landed) ||
+              (fullTarget != null &&
+                after.count != null &&
+                after.count >= fullTarget);
+            if (ok) break;
+            // Re-drop only on a failed drop (zero files added). A successful drop
+            // that didn't confirm is left for next-sync recovery — never re-dropped.
+            if (res.success) break;
+            if (a < BATCH_UPLOAD_ATTEMPTS)
+              console.log(
+                `[n2z] batch@${bi}: drop attempt ${a}/${BATCH_UPLOAD_ATTEMPTS} failed ` +
+                  `(${res.error || "unknown"}); retrying`,
+              );
           }
 
-          const after = await getSourceState(tab.id);
-          // Confirmed only when the full batch landed (count reached target) or
-          // the panel was unreadable and the drop reported success. We don't
-          // mark synced on a partial — better to re-sync the whole batch later
-          // (a re-sync only re-adds items NOT in syncedHashes) than to falsely
-          // skip a missing file.
-          const fullTarget =
-            before.count != null ? before.count + batch.length : null;
-          const ok =
-            (before.count == null && landed) ||
-            (fullTarget != null &&
-              after.count != null &&
-              after.count >= fullTarget);
           for (const p of batch) {
             allResults.push({
               title: p.item.title,
@@ -769,8 +813,9 @@ async function forwardSyncImpl(
           }
 
           console.log(
-            `[n2z] batch@${bi}: dropped ${batch.length}, before=${before.count}, after=${after.count}, ` +
-              `landed=${landed}, busy=${after.busy}, drop=${res.success}, method=${after.method}, ${Date.now() - t0}ms`,
+            `[n2z] batch@${bi}: dropped ${batch.length}, ok=${ok}, attempts=${attempts}, ` +
+              `before=${before.count}, after=${after.count}, landed=${landed}, busy=${after.busy}, ` +
+              `drop=${res.success}, method=${after.method}, ${Date.now() - t0}ms`,
           );
         }
       } finally {
@@ -1936,96 +1981,101 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
   // mouse click to open the file sub-panel. A scripted .click() doesn't create
   // a user activation, but CDP Input.dispatchMouseEvent does — this allows the
   // file chooser to open, which we then intercept.
-  const uploadBtnCoords = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      const getCleanText = (el) => {
-        let t = "";
-        for (const c of el.childNodes) {
-          if (c.nodeType === 3) t += c.textContent;
-          else if (c.nodeType === 1) {
-            const tag = c.tagName?.toLowerCase() || "";
-            const cls = (c.className || "").toString().toLowerCase();
-            if (
-              tag === "mat-icon" ||
-              cls.includes("material-icons") ||
-              cls.includes("mat-icon")
-            )
-              continue;
-            t += getCleanText(c);
-          }
+  //
+  // The lookup runs in-page and returns coords only once the button is VISIBLE
+  // with a non-zero rect. We poll it (via waitForInTab) so a dialog that hasn't
+  // finished rendering doesn't cause a "button not found" miss, and we re-run it
+  // before every click attempt below in case the dialog reflowed.
+  const findUploadBtn = () => {
+    const getCleanText = (el) => {
+      let t = "";
+      for (const c of el.childNodes) {
+        if (c.nodeType === 3) t += c.textContent;
+        else if (c.nodeType === 1) {
+          const tag = c.tagName?.toLowerCase() || "";
+          const cls = (c.className || "").toString().toLowerCase();
+          if (
+            tag === "mat-icon" ||
+            cls.includes("material-icons") ||
+            cls.includes("mat-icon")
+          )
+            continue;
+          t += getCleanText(c);
         }
-        return t.trim();
+      }
+      return t.trim();
+    };
+    const hasAny = (text, labels) =>
+      labels.some((label) => text.includes(label));
+    const isVisible = (el) => {
+      const style = window.getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden")
+        return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const coordsOf = (el, clean) => {
+      const rect = el.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        text: clean,
       };
-      const hasAny = (text, labels) =>
-        labels.some((label) => text.includes(label));
-      const uploadLabels = [
-        "upload files",
-        "upload file",
-        "upload",
-        "上传文件",
-        "上传",
-        "上傳檔案",
-        "上傳文件",
-        "上傳",
-        "ファイルをアップロード",
-        "アップロード",
-        "파일 업로드",
-        "업로드",
-        "subir archivos",
-        "subir archivo",
-        "subir",
-        "téléverser des fichiers",
-        "téléverser",
-        "importer des fichiers",
-        "dateien hochladen",
-        "datei hochladen",
-        "hochladen",
-        "carregar arquivos",
-        "carregar ficheiros",
-        "carregar",
-        "carica file",
-        "carica",
-        "bestanden uploaden",
-        "uploaden",
-        "unggah file",
-        "unggah",
-      ];
-      const all = document.querySelectorAll(
-        'button, [role="button"], [tabindex="0"], a, label, div, span',
-      );
-      for (const el of all) {
-        const style = window.getComputedStyle(el);
-        if (style.display === "none" || style.visibility === "hidden") continue;
-        const clean = getCleanText(el).toLowerCase();
-        if (uploadLabels.includes(clean)) {
-          const rect = el.getBoundingClientRect();
-          return {
-            x: rect.left + rect.width / 2,
-            y: rect.top + rect.height / 2,
-            text: clean,
-          };
-        }
-      }
-      // Loose fallback
-      for (const el of all) {
-        const style = window.getComputedStyle(el);
-        if (style.display === "none" || style.visibility === "hidden") continue;
-        const clean = getCleanText(el).toLowerCase();
-        if (hasAny(clean, uploadLabels) && clean.length < 40) {
-          const rect = el.getBoundingClientRect();
-          return {
-            x: rect.left + rect.width / 2,
-            y: rect.top + rect.height / 2,
-            text: clean,
-          };
-        }
-      }
-      return null;
-    },
-  });
+    };
+    const uploadLabels = [
+      "upload files",
+      "upload file",
+      "upload",
+      "上传文件",
+      "上传",
+      "上傳檔案",
+      "上傳文件",
+      "上傳",
+      "ファイルをアップロード",
+      "アップロード",
+      "파일 업로드",
+      "업로드",
+      "subir archivos",
+      "subir archivo",
+      "subir",
+      "téléverser des fichiers",
+      "téléverser",
+      "importer des fichiers",
+      "dateien hochladen",
+      "datei hochladen",
+      "hochladen",
+      "carregar arquivos",
+      "carregar ficheiros",
+      "carregar",
+      "carica file",
+      "carica",
+      "bestanden uploaden",
+      "uploaden",
+      "unggah file",
+      "unggah",
+    ];
+    const all = document.querySelectorAll(
+      'button, [role="button"], [tabindex="0"], a, label, div, span',
+    );
+    for (const el of all) {
+      if (!isVisible(el)) continue;
+      const clean = getCleanText(el).toLowerCase();
+      if (uploadLabels.includes(clean)) return coordsOf(el, clean);
+    }
+    // Loose fallback
+    for (const el of all) {
+      if (!isVisible(el)) continue;
+      const clean = getCleanText(el).toLowerCase();
+      if (hasAny(clean, uploadLabels) && clean.length < 40)
+        return coordsOf(el, clean);
+    }
+    return null;
+  };
 
-  const btnCoords = uploadBtnCoords?.[0]?.result;
+  const btnCoords = await waitForInTab(tabId, findUploadBtn, {
+    timeoutMs: 5000,
+    intervalMs: 150,
+  });
   if (!btnCoords) {
     return { success: false, error: "Upload files button not found in dialog" };
   }
@@ -2044,44 +2094,83 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     );
     interceptionEnabled = true;
 
-    let fileChooserResolve;
-    const fileChooserPromise = new Promise((r) => {
-      fileChooserResolve = r;
-    });
-    const chooserTimeout = setTimeout(() => fileChooserResolve(null), 15000);
+    // A single listener routes every Page.fileChooserOpened to whichever click
+    // attempt is currently waiting. Re-armed per attempt via `chooserResolve`.
+    let chooserResolve = null;
     onEvent = (source, method, params) => {
-      if (source.tabId === tabId && method === "Page.fileChooserOpened") {
-        clearTimeout(chooserTimeout);
-        fileChooserResolve(params);
+      if (
+        source.tabId === tabId &&
+        method === "Page.fileChooserOpened" &&
+        chooserResolve
+      ) {
+        const r = chooserResolve;
+        chooserResolve = null;
+        r(params);
       }
     };
     chrome.debugger.onEvent.addListener(onEvent);
     listenerAttached = true;
 
-    // Step 3: Trusted CDP mouse click — creates a real user activation
-    const x = Math.round(btnCoords.x);
-    const y = Math.round(btnCoords.y);
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x,
-      y,
-      button: "left",
-      clickCount: 1,
-    });
-    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x,
-      y,
-      button: "left",
-      clickCount: 1,
-    });
+    // Step 3-4: Fire a trusted CDP click and wait for the file chooser. The
+    // click can transiently miss (button not yet hit-testable), so retry with a
+    // short per-attempt timeout, re-reading fresh coords each time in case the
+    // dialog reflowed. A user activation only comes from CDP Input events, not a
+    // scripted .click(), so this trusted dispatch is required to open the chooser.
+    let chooserEvent = null;
+    let lastBtnText = btnCoords.text;
+    for (let attempt = 1; attempt <= UPLOAD_CLICK_ATTEMPTS; attempt++) {
+      // Re-read coords on retries; the first attempt reuses the coords we already
+      // polled for above.
+      const coords =
+        attempt === 1
+          ? btnCoords
+          : await waitForInTab(tabId, findUploadBtn, {
+              timeoutMs: 2000,
+              intervalMs: 150,
+            });
+      if (!coords) continue;
+      lastBtnText = coords.text;
 
-    // Step 4: Wait for file chooser event
-    const chooserEvent = await fileChooserPromise;
+      let resolveChooser;
+      const chooserPromise = new Promise((r) => {
+        resolveChooser = r;
+      });
+      const chooserTimeout = setTimeout(
+        () => resolveChooser(null),
+        CHOOSER_ATTEMPT_TIMEOUT_MS,
+      );
+      chooserResolve = resolveChooser;
+
+      const x = Math.round(coords.x);
+      const y = Math.round(coords.y);
+      await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x,
+        y,
+        button: "left",
+        clickCount: 1,
+      });
+      await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x,
+        y,
+        button: "left",
+        clickCount: 1,
+      });
+
+      chooserEvent = await chooserPromise;
+      clearTimeout(chooserTimeout);
+      chooserResolve = null;
+      if (chooserEvent) break;
+      console.log(
+        `[n2z] upload-click attempt ${attempt}/${UPLOAD_CLICK_ATTEMPTS} missed; retrying`,
+      );
+    }
+
     if (!chooserEvent) {
       return {
         success: false,
-        error: `Trusted click on "${btnCoords.text}" did not open file chooser`,
+        error: `Trusted click on "${lastBtnText}" did not open file chooser`,
       };
     }
 
