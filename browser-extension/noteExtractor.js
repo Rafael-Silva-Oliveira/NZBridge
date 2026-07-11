@@ -47,6 +47,8 @@ async function extractSavedNotes() {
     '[data-panel="notes"]',
     '[aria-label*="Notes" i]',
     '[aria-label*="Saved" i]',
+    '[aria-label*="notlar" i]',
+    '[aria-label*="kaydedilen" i]',
     '[aria-label*="笔记" i]',
     '[aria-label*="已保存" i]',
     '[aria-label*="筆記" i]',
@@ -74,6 +76,7 @@ async function extractSavedNotes() {
     );
     const noteTabLabels = [
       "notes", "saved notes", "my notes",
+      "notlar", "kaydedilen notlar", "notlarım", "kaydedilenler",
       "笔记", "已保存的笔记", "我的笔记",
       "筆記", "已儲存的筆記", "我的筆記",
       "メモ", "ノート", "保存済みのメモ",

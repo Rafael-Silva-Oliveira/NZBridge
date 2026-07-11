@@ -353,6 +353,8 @@ async function forwardSyncImpl(
               !val ||
               /^untitled/i.test(val) ||
               /^new notebook/i.test(val) ||
+              /^adsız/i.test(val) ||
+              /^yeni/i.test(val) ||
               val.length < 3
             ) {
               const setter =
@@ -384,6 +386,8 @@ async function forwardSyncImpl(
               !text ||
               /^untitled/i.test(text) ||
               /^new notebook/i.test(text) ||
+              /^adsız/i.test(text) ||
+              /^yeni/i.test(text) ||
               text.length < 3
             ) {
               el.textContent = name;
@@ -437,6 +441,8 @@ async function forwardSyncImpl(
       const sourceTabLabels = [
         "sources",
         "source",
+        "kaynaklar",
+        "kaynak",
         "来源",
         "來源",
         "ソース",
@@ -1037,6 +1043,9 @@ async function addUrlSourcesBatch(tabId, urls) {
         "add source",
         "add sources",
         "add a source",
+        "kaynak ekle",
+        "kaynak ekleyin",
+        "kaynaklar",
         "添加来源",
         "添加源",
         "新增来源",
@@ -1214,6 +1223,12 @@ async function addUrlSourcesBatch(tabId, urls) {
         "links",
         "url",
         "urls",
+        "web sitesi",
+        "web siteleri",
+        "web sayfaları",
+        "bağlantı",
+        "bağlantılar",
+        "urller",
         "网站",
         "网页",
         "链接",
@@ -1307,6 +1322,9 @@ async function addUrlSourcesBatch(tabId, urls) {
         "paste",
         "link",
         "url",
+        "yapıştır",
+        "bağlantı",
+        "kopyala",
         "粘贴",
         "貼上",
         "链接",
@@ -1514,6 +1532,11 @@ async function addUrlSourcesBatch(tabId, urls) {
         "submit",
         "add source",
         "add sources",
+        "ekle",
+        "gönder",
+        "yerleştir",
+        "kaynak ekle",
+        "kaynakları ekle",
         "插入",
         "提交",
         "添加来源",
@@ -1907,6 +1930,9 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
         "add source",
         "add sources",
         "add a source",
+        "kaynak ekle",
+        "kaynak ekleyin",
+        "kaynaklar",
         "添加来源",
         "添加源",
         "新增来源",
@@ -1936,7 +1962,7 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
       ];
       const body = document.body.textContent || "";
       if (
-        /drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(
+        /drop your files|upload files|drag.*files|dosya(ları|larınızı)?\s*(yükle|bırakın|sürükle)|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(
           body,
         )
       ) {
@@ -1968,7 +1994,7 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
     const ready = await waitForInTab(
       tabId,
       () =>
-        /drop your files|upload files|drag.*files|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(
+        /drop your files|upload files|drag.*files|dosya(ları|larınızı)?\s*(yükle|bırakın|sürükle)|拖放文件|拖拽文件|上传文件|上傳檔案|上傳文件|ファイルをアップロード|파일 업로드|subir archivos|téléverser|dateien hochladen|carregar arquivos|carica file|bestanden uploaden|unggah file/i.test(
           document.body.textContent || "",
         ),
       { timeoutMs: 5000, intervalMs: 100 },
@@ -2026,6 +2052,10 @@ async function injectFilesBatchViaCDP(tabId, filesData) {
       "upload files",
       "upload file",
       "upload",
+      "dosya yükle",
+      "dosya yükleyin",
+      "yükle",
+      "dosyaları yükle",
       "上传文件",
       "上传",
       "上傳檔案",
@@ -2348,6 +2378,7 @@ function ensureStudioVisibleFn() {
   );
   const studioLabels = [
     "studio",
+    "stüdyo",
     "工作室",
     "工作區",
     "スタジオ",
@@ -3453,6 +3484,7 @@ async function extractNotesFromTab(tabId) {
         );
         const studioLabels = [
           "studio",
+          "stüdyo",
           "工作室",
           "工作區",
           "スタジオ",
@@ -3480,6 +3512,8 @@ async function extractNotesFromTab(tabId) {
           if (
             aria.includes("back") ||
             aria.includes("close") ||
+            aria.includes("geri") ||
+            aria.includes("kapat") ||
             aria.includes("返回") ||
             aria.includes("关闭") ||
             aria.includes("關閉") ||
@@ -3664,7 +3698,7 @@ async function getSourceState(tabId) {
         // Count strategy 1: explicit "N sources" text (virtualization-proof).
         let countFromText = null;
         const countRe =
-          /(\d+)\s*(sources?|来源|來源|ソース|소스|출처|fuentes?|quellen?|fontes?|fonti|bronnen|sumber)/i;
+          /(\d+)\s*(sources?|kaynak(lar)?|来源|來源|ソース|소스|출처|fuentes?|quellen?|fontes?|fonti|bronnen|sumber)/i;
         for (const el of document.querySelectorAll(
           'span, div, p, h1, h2, h3, button, [role="button"], [aria-label]',
         )) {

@@ -37,6 +37,7 @@ async function prepareUploadDialog() {
     "aggiungi fonte", "aggiungi fonti",
     "bron toevoegen", "bronnen toevoegen",
     "tambahkan sumber",
+    "kaynak ekle", "kaynak ekleyin", "kaynaklar"
   ];
   const uploadLabels = [
     "upload files", "upload file", "upload",
@@ -50,6 +51,7 @@ async function prepareUploadDialog() {
     "carica file", "carica",
     "bestanden uploaden", "uploaden",
     "unggah file", "unggah",
+    "dosya yükle", "dosya yükleyin", "yükle", "dosyaları yükle"
   ];
   const hasAny = (text, labels) => labels.some((label) => text.includes(label));
 
@@ -65,6 +67,8 @@ async function prepareUploadDialog() {
     '[aria-label*="Add source" i]',
     '[aria-label*="Upload" i]',
     '[aria-label*="add source" i]',
+    '[aria-label*="kaynak ekle" i]',
+    '[aria-label*="yükle" i]',
     '[aria-label*="添加来源" i]',
     '[aria-label*="上传" i]',
     '[aria-label*="新增來源" i]',
@@ -123,7 +127,7 @@ async function prepareUploadDialog() {
   );
   for (const opt of uploadOptions) {
     const text = (opt.textContent || "").toLowerCase();
-    if (hasAny(text, uploadLabels) || text.includes("file") || text.includes("文件") || text.includes("檔案")) {
+    if (hasAny(text, uploadLabels) || text.includes("file") || text.includes("文件") || text.includes("檔案") || text.includes("dosya")) {
       opt.click();
       await sleep(800);
       fileInput = document.querySelector('input[type="file"]');

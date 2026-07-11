@@ -68,7 +68,7 @@ Before installing NZBridge, make sure you have:
 
 > On **Chrome/Edge 142+**, you must allow the extension to reach Zotero on `localhost`: `chrome://extensions` → NZBridge → **Details** → **Site settings** → **Local network access** → **Allow**. See [Troubleshooting](#chromeedge-142-blocks-the-zotero-connection-local-network-access) if collections won't load or syncs time out.
 
-Note that it only works if your NotebookLM language settings is set to **english**.
+Note that it works with English, Turkish, Spanish, French, German, Chinese, Japanese, Korean, and other major language settings in NotebookLM (if your language is not supported, you may need to temporarily switch to English).
 ## Installation
 
 NZBridge has **two components** that work together — you need to install both:
