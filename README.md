@@ -11,7 +11,7 @@
 
 ---
 
-NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/) and [Google NotebookLM](https://notebooklm.google.com/). Push your research library into NotebookLM for AI-powered analysis, then pull your generated notes back into Zotero — all without leaving your browser.
+NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/) and [Gemini Notebook](https://notebooklm.google.com/). Push your research library into NotebookLM for AI-powered analysis, then pull your generated notes back into Zotero — all without leaving your browser.
 
 ## Demo
 
@@ -20,9 +20,6 @@ NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/
     <tr>
       <td align="center" valign="middle" style="border: none; padding: 0 20px;">
         <a href="https://www.youtube.com/watch?v=RCJhwf-Kwto"><img src="https://img.shields.io/badge/YouTube-Watch%20Demo-red?style=for-the-badge&logo=youtube" alt="Watch the demo on YouTube"></a>
-      </td>
-      <td align="center" valign="middle" style="border: none; padding: 0 20px;">
-        <img src="https://api.star-history.com/svg?repos=Rafael-Silva-Oliveira/NZBridge&type=Date" alt="NZBridge star history over time" width="360">
       </td>
     </tr>
   </table>
