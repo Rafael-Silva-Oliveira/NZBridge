@@ -285,8 +285,27 @@
 
       <div class="update-section">
         <h3 class="update-version">
-          v0.4.2 <span class="update-tag current">Current</span>
+          v0.4.3 <span class="update-tag current">Current</span>
         </h3>
+        <ul class="update-list">
+          <li>
+            Gemini Notebook support: NotebookLM has rebranded to Gemini Notebook
+            at <code>notebook.google.com</code>, which broke tab detection and
+            caused "No NotebookLM tab found" errors and PDFs no longer
+            uploading from Zotero. NZBridge now detects both the new
+            <code>notebook.google.com</code> and the legacy
+            <code>notebooklm.google.com</code> hosts, so sync works during the
+            rollout regardless of which domain your account uses
+          </li>
+          <li>
+            Thanks to <strong>b0nl</strong> and <strong>yt_zhang</strong> for
+            reporting the Gemini Notebook domain change that broke sync
+          </li>
+        </ul>
+      </div>
+
+      <div class="update-section">
+        <h3 class="update-version">v0.4.2</h3>
         <ul class="update-list">
           <li>
             More reliable PDF uploads: a transient miss on the "Upload files"

@@ -23,7 +23,26 @@ const cancelledSyncs = new Set();
 // Shape: { phase, current, total, currentTitle, done, result }
 const syncProgress = new Map();
 
-const NOTEBOOKLM_URL_PREFIX = "https://notebooklm.google.com/";
+// Gemini Notebook now uses notebook.google.com. Keep the legacy NotebookLM
+// host during the rollout because existing accounts and links may use either.
+const NOTEBOOK_URL_PATTERNS = [
+  "https://notebook.google.com/*",
+  "https://notebooklm.google.com/*",
+];
+
+function isNotebookUrl(url) {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return (
+      ["notebook.google.com", "notebooklm.google.com"].includes(
+        parsed.hostname,
+      ) && parsed.pathname.startsWith("/notebook/")
+    );
+  } catch {
+    return false;
+  }
+}
 const AMBIGUOUS_TAB_ERROR =
   "Multiple NotebookLM tabs are open. Please switch to the notebook you want to sync into and try again.";
 
@@ -187,13 +206,16 @@ async function resolveNotebookLMTab(preferredNotebookId = null) {
     lastFocusedWindow: true,
   });
   const active = activeTabs[0];
-  if (active?.url?.startsWith(NOTEBOOKLM_URL_PREFIX)) {
+  if (isNotebookUrl(active?.url)) {
     return { tab: active, reason: "active" };
   }
 
-  const allNotebookLMTabs = await chrome.tabs.query({
-    url: "https://notebooklm.google.com/*",
+  const candidateTabs = await chrome.tabs.query({
+    url: NOTEBOOK_URL_PATTERNS,
   });
+  const allNotebookLMTabs = candidateTabs.filter((tab) =>
+    isNotebookUrl(tab.url),
+  );
 
   if (preferredNotebookId) {
     const match = allNotebookLMTabs.find((t) =>
