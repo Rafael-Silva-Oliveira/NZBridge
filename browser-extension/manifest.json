@@ -6,6 +6,7 @@
   "permissions": ["activeTab", "scripting", "debugger", "storage"],
   "host_permissions": [
     "http://localhost:23119/*",
+    "https://notebook.google.com/*",
     "https://notebooklm.google.com/*"
   ],
   "background": {
@@ -21,7 +22,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://notebooklm.google.com/*"],
+      "matches": [
+        "https://notebook.google.com/*",
+        "https://notebooklm.google.com/*"
+      ],
       "js": ["content.js", "noteExtractor.js"],
       "run_at": "document_idle"
     }
