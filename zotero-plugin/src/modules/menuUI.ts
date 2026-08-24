@@ -34,12 +34,34 @@ export function registerMenus(): void {
 }
 
 /**
+ * Returns the currently selected collection, or null if none is selected.
+ *
+ * Zotero 10 added multi-selection and removed the singular getters:
+ * `getSelectedCollection()` now throws, naming `getSelectedCollections()`
+ * as its replacement. We prefer the plural API where it exists and fall
+ * back to the singular one on Zotero 7-9, so a single build works across
+ * every supported version.
+ *
+ * n2z acts on one collection at a time, so when several are selected we
+ * take the first — matching the pre-10 behaviour the handlers expect.
+ */
+function getSelectedCollection(): Zotero.Collection | null {
+  const zoteroPane = Zotero.getActiveZoteroPane() as any;
+
+  if (typeof zoteroPane.getSelectedCollections === "function") {
+    const collections = zoteroPane.getSelectedCollections();
+    return collections?.length ? collections[0] : null;
+  }
+
+  return zoteroPane.getSelectedCollection() || null;
+}
+
+/**
  * Handler: user requests forward sync on a collection.
  * Shows a notification since actual sync is driven by the browser extension.
  */
 function onSyncToNotebookLM(): void {
-  const zoteroPane = Zotero.getActiveZoteroPane();
-  const collection = zoteroPane.getSelectedCollection();
+  const collection = getSelectedCollection();
 
   if (!collection) {
     showNotification("Please select a collection first.", "default");
@@ -57,8 +79,7 @@ function onSyncToNotebookLM(): void {
  * Shows a notification since actual import is driven by the browser extension.
  */
 function onImportFromNotebookLM(): void {
-  const zoteroPane = Zotero.getActiveZoteroPane();
-  const collection = zoteroPane.getSelectedCollection();
+  const collection = getSelectedCollection();
 
   if (!collection) {
     showNotification("Please select a collection first.", "default");
