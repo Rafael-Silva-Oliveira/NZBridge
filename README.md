@@ -26,6 +26,12 @@ NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/
 </div>
 
 > See NZBridge in action — full walkthrough of forward sync, backward sync, and the Zotero plugin installation.
+---
+
+<a href="https://buymeacoffee.com/rafaeloliveira" target="_blank">
+  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50">
+</a>
+---
 
 ## Features
 
@@ -263,11 +269,6 @@ chrome-extension://<EXTENSION_ID>/*
 
 AGPL-3.0-or-later
 
----
-
-<a href="https://buymeacoffee.com/rafaeloliveira" target="_blank">
-  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50">
-</a>
 
 ---
 
