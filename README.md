@@ -268,3 +268,13 @@ AGPL-3.0-or-later
 <a href="https://buymeacoffee.com/rafaeloliveira" target="_blank">
   <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50">
 </a>
+
+---
+
+<p align="center">
+  <a href="https://ai-label.org/">
+    <img src="https://ai-label.org/image-pack/ai-label_banner-assisted-by-ai.svg" alt="Assisted by AI label">
+  </a>
+</p>
+
+This project was designed and developed with assistance from AI tools. Learn more about the label at <a href="https://ai-label.org/">ai-label.org</a>.
