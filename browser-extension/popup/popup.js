@@ -941,12 +941,14 @@ async function previewItems(source) {
   }
 
   // Items already uploaded to the connected notebook (keyed by Zotero item
-  // key, so renaming a source inside NotebookLM doesn't affect this)
+  // key or per-attachment unit key, so renaming a source inside NotebookLM
+  // doesn't affect this)
   const mappingKey = source.tag
     ? syntheticCollectionIdForTag(source.libraryId, source.tag)
     : source.collectionId;
   const syncedKeys = await getSyncedKeys(mappingKey);
-  const uploadedCount = items.filter((i) => syncedKeys.has(i.itemKey)).length;
+  const uploadedCount = items.filter((i) => itemGroupUploaded(i, syncedKeys)).length;
+  const multiCount = items.filter((i) => ensureUnits(i).length > 1).length;
 
   // Summary line
   const parts = [];
@@ -955,6 +957,9 @@ async function previewItems(source) {
   if (urlItems.length)
     parts.push(`${urlItems.length} URL${urlItems.length > 1 ? "s" : ""}`);
   let summaryHtml = `<strong>${totalCount} item${totalCount > 1 ? "s" : ""}</strong>: ${parts.join(", ")}`;
+  if (multiCount > 0) {
+    summaryHtml += ` <span class="multi-summary">· ${multiCount} with multiple attachments (expand ▸)</span>`;
+  }
   if (uploadedCount > 0) {
     summaryHtml += `<br/><span class="uploaded-summary">&#10003; ${uploadedCount} already in this notebook</span>`;
   }
@@ -978,9 +983,7 @@ async function previewItems(source) {
     fileCountEl.textContent = groupCountLabel(fileItems, syncedKeys);
     groupFiles.classList.remove("hidden");
     for (const item of fileItems) {
-      filesContainer.appendChild(
-        makeItemRow(item, syncedKeys.has(item.itemKey)),
-      );
+      filesContainer.appendChild(makeItemBlock(item, syncedKeys));
     }
   } else {
     groupFiles.classList.add("hidden");
@@ -990,9 +993,7 @@ async function previewItems(source) {
     urlCountEl.textContent = groupCountLabel(urlItems, syncedKeys);
     groupUrls.classList.remove("hidden");
     for (const item of urlItems) {
-      urlsContainer.appendChild(
-        makeItemRow(item, syncedKeys.has(item.itemKey)),
-      );
+      urlsContainer.appendChild(makeItemBlock(item, syncedKeys));
     }
   } else {
     groupUrls.classList.add("hidden");
@@ -1004,33 +1005,43 @@ async function previewItems(source) {
   // "Check notebook" is useful only when something is marked uploaded.
   if (checkBtn) checkBtn.disabled = uploadedCount === 0;
 
-  // Group select-all checkboxes (disabled when every item is already uploaded).
+  // Group select-all checkboxes (default/main attachments only — never the
+  // per-attachment sub-checkboxes; disabled when every item is already uploaded).
   // Reset to unchecked on each render so a re-render (e.g. after a sync) doesn't
   // leave them ticked from a previous selection.
   document.getElementById("select-all-files").checked = false;
   document.getElementById("select-all-urls").checked = false;
   document.getElementById("select-all-files").disabled =
-    !filesContainer.querySelector('input[type="checkbox"]');
+    !filesContainer.querySelector('.item-row-main > input[type="checkbox"]');
   document.getElementById("select-all-urls").disabled =
-    !urlsContainer.querySelector('input[type="checkbox"]');
+    !urlsContainer.querySelector('.item-row-main > input[type="checkbox"]');
   document.getElementById("select-all-files").onchange = (e) => {
     filesContainer
-      .querySelectorAll('input[type="checkbox"]')
+      .querySelectorAll('.item-row-main > input[type="checkbox"]')
       .forEach((cb) => (cb.checked = e.target.checked));
     updateSyncButtonState();
   };
   document.getElementById("select-all-urls").onchange = (e) => {
     urlsContainer
-      .querySelectorAll('input[type="checkbox"]')
+      .querySelectorAll('.item-row-main > input[type="checkbox"]')
       .forEach((cb) => (cb.checked = e.target.checked));
     updateSyncButtonState();
   };
 
-  // Update sync button when individual items toggled
+  // Update sync button + the "+N" chips when any unit (parent or sub) toggled.
+  // Scope carefully: the group select-all checkboxes also live inside
+  // #item-list — a bare input[type=checkbox] selector would clobber their
+  // handlers right above (that's how "select all" once stopped selecting).
   itemList
-    .querySelectorAll('.item-row input[type="checkbox"]')
+    .querySelectorAll(
+      '.item-row-main input[type="checkbox"], .item-subrow input[type="checkbox"]',
+    )
     .forEach((cb) => {
-      cb.onchange = () => updateSyncButtonState();
+      cb.onchange = () => {
+        refreshExtraChips(filesContainer);
+        refreshExtraChips(urlsContainer);
+        updateSyncButtonState();
+      };
     });
   updateSyncButtonState();
 }
@@ -1070,47 +1081,244 @@ async function getSyncedKeys(collectionId) {
 }
 
 function groupCountLabel(items, syncedKeys) {
-  const uploaded = items.filter((i) => syncedKeys.has(i.itemKey)).length;
+  const uploaded = items.filter((i) => itemGroupUploaded(i, syncedKeys)).length;
   return uploaded > 0
     ? `(${items.length - uploaded} new · ${uploaded} uploaded)`
     : `(${items.length})`;
 }
 
-function makeItemRow(item, isUploaded = false) {
-  const row = document.createElement("label");
-  row.className = isUploaded ? "item-row uploaded" : "item-row";
-  if (isUploaded) {
-    // Already in the notebook: green check instead of a checkbox, not selectable
+// ─── Attachment units ─────────────────────────────────────────────────
+
+// Normalizes an item (new plugin with `units`, or legacy shape) to a unit
+// list. Must stay in sync with background.js's ensureUnits.
+function ensureUnits(item) {
+  if (Array.isArray(item.units) && item.units.length > 0) return item.units;
+  return item.exportType === "file"
+    ? [
+        {
+          unitId: "att-" + item.attachmentId,
+          kind: "file",
+          attachmentId: item.attachmentId,
+          title: item.attachmentTitle || item.title,
+          contentType: item.contentType,
+          filename: item.filename,
+          fileSize: item.fileSize,
+          isDefault: true,
+        },
+      ]
+    : [
+        {
+          unitId: "item-url",
+          kind: "url",
+          attachmentId: 0,
+          title: item.title || item.url,
+          contentType: "text/url",
+          filename: "",
+          fileSize: 0,
+          url: item.url,
+          isDefault: true,
+        },
+      ];
+}
+
+// Canonical marker/selection key for one unit. The default unit keeps the
+// bare itemKey (byte-identical to the historical per-item markers).
+function unitKeyOf(item, unit) {
+  return unit.isDefault ? item.itemKey : item.itemKey + "::" + unit.unitId;
+}
+
+// An item counts as uploaded when ANY of its units is in the synced set —
+// a synced main PDF still leaves its supplementary attachments uploadable.
+function itemGroupUploaded(item, syncedKeys) {
+  return ensureUnits(item).some((u) => syncedKeys.has(unitKeyOf(item, u)));
+}
+
+function domainOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url || "";
+  }
+}
+
+function fmtSize(bytes) {
+  if (!bytes) return "";
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  if (bytes >= 1024) return Math.round(bytes / 1024) + " KB";
+  return bytes + " B";
+}
+
+/**
+ * Builds one item block: the familiar row (checkbox = the MAIN attachment,
+ * exactly today's semantics) plus, for multi-attachment items, a chevron
+ * that reveals the other attachments with their own checkboxes.
+ */
+function makeItemBlock(item, syncedKeys) {
+  const units = ensureUnits(item);
+  const defaultUnit = units.find((u) => u.isDefault) || units[0];
+  const extras = units.filter((u) => u !== defaultUnit);
+  const defaultUploaded = syncedKeys.has(unitKeyOf(item, defaultUnit));
+
+  const block = document.createElement("div");
+  block.className = "item-block";
+
+  // Expansion container, declared here so the toggle handler can reach it
+  const subrows = document.createElement("div");
+  subrows.className = "item-subrows";
+
+  // ── Row: the label part toggles the DEFAULT unit (main attachment) ──
+  const row = document.createElement("div");
+  row.className = defaultUploaded ? "item-row uploaded" : "item-row";
+  if (units.length > 1) row.classList.add("has-attachments");
+
+  const main = document.createElement("label");
+  main.className = "item-row-main";
+  if (defaultUploaded) {
     const check = document.createElement("span");
     check.className = "item-check";
     check.textContent = "✓";
-    row.title = "Already uploaded to this notebook";
-    row.appendChild(check);
+    main.title = "Already uploaded to this notebook";
+    main.appendChild(check);
   } else {
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = false; // unchecked by default — user picks what to sync
     cb.dataset.itemKey = item.itemKey;
-    row.appendChild(cb);
+    cb.dataset.unitId = defaultUnit.unitId;
+    cb.dataset.default = "1"; // parent checkbox IS the default unit
+    main.appendChild(cb);
   }
   const name = document.createElement("span");
   name.className = "item-row-name";
   name.textContent = item.title || item.url || item.itemKey;
   name.title = item.title || item.url || "";
-  row.appendChild(name);
-  return row;
+  main.appendChild(name);
+  row.appendChild(main);
+
+  if (units.length > 1) {
+    // One real button for the whole "+N ▸" cluster — bigger, hover-highlighted
+    // target that cannot be confused with the row's checkbox toggle.
+    const extrasLabel =
+      extras.length > 1 ? "s" : "";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "item-attachments";
+    toggle.title = `Show ${extras.length} more attachment${extrasLabel}`;
+
+    const chip = document.createElement("span");
+    chip.className = "item-extra-count";
+    chip.textContent = "+" + extras.length;
+    toggle.appendChild(chip);
+
+    const chevron = document.createElement("span");
+    chevron.className = "item-expander";
+    chevron.textContent = "▸";
+    chevron.setAttribute("aria-hidden", "true");
+    toggle.appendChild(chevron);
+
+    toggle.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const open = subrows.classList.toggle("open");
+      toggle.classList.toggle("open", open);
+      toggle.title = open
+        ? "Hide attachments"
+        : `Show ${extras.length} more attachment${extrasLabel}`;
+    });
+    row.appendChild(toggle);
+  }
+  block.appendChild(row);
+
+  // ── Expansion: muted "Main" info row + one selectable row per extra ──
+  if (units.length > 1) {
+    const mainInfo = document.createElement("div");
+    mainInfo.className = "item-main-info";
+    mainInfo.textContent =
+      defaultUnit.kind === "file"
+        ? `Main · ${defaultUnit.filename || defaultUnit.title}${defaultUnit.fileSize ? " · " + fmtSize(defaultUnit.fileSize) : ""}`
+        : `Main · ${domainOf(defaultUnit.url)}`;
+    mainInfo.title =
+      "The attachment Zotero opens for this item — toggled by the row checkbox";
+    subrows.appendChild(mainInfo);
+
+    for (const unit of extras) {
+      const uploaded = syncedKeys.has(unitKeyOf(item, unit));
+      const sub = document.createElement("label");
+      sub.className = uploaded ? "item-subrow uploaded" : "item-subrow";
+      if (uploaded) {
+        const check = document.createElement("span");
+        check.className = "item-check";
+        check.textContent = "✓";
+        sub.title = "Already uploaded to this notebook";
+        sub.appendChild(check);
+      } else {
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = false;
+        cb.dataset.itemKey = item.itemKey;
+        cb.dataset.unitId = unit.unitId;
+        sub.appendChild(cb);
+      }
+      const label = document.createElement("span");
+      label.className = "item-subrow-name";
+      label.textContent =
+        unit.kind === "file"
+          ? unit.title || unit.filename
+          : unit.title || domainOf(unit.url);
+      label.title = unit.kind === "file" ? unit.filename : unit.url || "";
+      sub.appendChild(label);
+      if (unit.kind === "file" ? unit.fileSize : unit.url) {
+        const meta = document.createElement("span");
+        meta.className = "item-subrow-meta";
+        meta.textContent =
+          unit.kind === "file"
+            ? fmtSize(unit.fileSize)
+            : "Link · " + domainOf(unit.url);
+        sub.appendChild(meta);
+      }
+      subrows.appendChild(sub);
+    }
+    block.appendChild(subrows);
+  }
+
+  return block;
 }
 
+// Lights up the "+N" chip of any block whose extra attachments are ticked.
+function refreshExtraChips(container) {
+  container.querySelectorAll(".item-block").forEach((block) => {
+    const chip = block.querySelector(".item-extra-count");
+    if (!chip) return;
+    const any =
+      block.querySelectorAll(".item-subrows input[type='checkbox']:checked")
+        .length > 0;
+    chip.classList.toggle("active", any);
+  });
+}
+
+// Checked parent checkboxes → item keys (legacy compat field).
 function getSelectedItemKeys() {
   return Array.from(
     document.querySelectorAll(
-      '#item-list .item-row input[type="checkbox"]:checked',
+      '#item-list .item-row-main > input[type="checkbox"]:checked',
     ),
   ).map((cb) => cb.dataset.itemKey);
 }
 
+// Every checked checkbox (parent or sub-row) → canonical unit keys.
+// The default unit keeps the bare itemKey; extras are "itemKey::unitId".
+function getSelectedUnits() {
+  return Array.from(
+    document.querySelectorAll('#item-list input[type="checkbox"]:checked'),
+  ).map((cb) =>
+    cb.dataset.default === "1"
+      ? cb.dataset.itemKey
+      : `${cb.dataset.itemKey}::${cb.dataset.unitId}`,
+  );
+}
+
 function updateSyncButtonState() {
-  const anySelected = getSelectedItemKeys().length > 0;
+  const anySelected = getSelectedUnits().length > 0;
   document.getElementById("btn-sync").disabled = !anySelected;
 }
 
@@ -1388,12 +1596,14 @@ async function handleForwardSync() {
   try {
     // Fire-and-forget: background starts sync and returns immediately
     const selectedItemKeys = getSelectedItemKeys();
+    const selectedUnits = getSelectedUnits();
     const startResult = await sendMessage(
       {
         type: "n2z-forward-sync",
         collectionId,
         collectionName,
         selectedItemKeys: selectedItemKeys.length > 0 ? selectedItemKeys : null,
+        selectedUnits: selectedUnits.length > 0 ? selectedUnits : null,
         libraryId,
         libraryName,
         tag,

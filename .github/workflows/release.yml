@@ -69,7 +69,7 @@ jobs:
         run: |
           cd browser-extension
           zip -r "../NZBridge-browser-extension-${{ github.ref_name }}.zip" . \
-            --exclude "*.DS_Store" --exclude "__pycache__/*"
+            --exclude "*.DS_Store" --exclude "__pycache__/*" --exclude "test/*"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

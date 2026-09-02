@@ -1085,15 +1085,25 @@ body.dark .btn.primary:hover:not(:disabled) {
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  cursor: pointer;
   border-bottom: 1px solid var(--border);
+}
+
+/* Clickable part of the row: toggles the item's main attachment */
+.item-row-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
 }
 
 .item-row input[type="checkbox"] {
   accent-color: var(--accent);
 }
 
-.item-row:last-child {
+/* Rows are wrapped in .item-block (row + optional attachment sub-rows) */
+.item-block:last-child .item-row {
   border-bottom: none;
 }
 
@@ -1112,12 +1122,17 @@ body.dark .btn.primary:hover:not(:disabled) {
 }
 
 /* Items already uploaded to the connected notebook */
-.item-row.uploaded {
+.item-row.uploaded .item-row-main {
   cursor: default;
 }
 
 .item-row.uploaded:hover {
   background: none;
+}
+
+/* ...but multi-attachment uploaded rows have a live toggle — give feedback */
+.item-row.uploaded.has-attachments:hover {
+  background: var(--bg-hover);
 }
 
 .item-row.uploaded .item-row-name {
@@ -1141,6 +1156,150 @@ body.dark .btn.primary:hover:not(:disabled) {
 
 .uploaded-summary {
   color: var(--success-fg);
+}
+
+.multi-summary {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* ─── Expandable multi-attachment items ────────────────────────── */
+
+/* "+N ▸" toggle: reveals an item's other attachments. One real button for
+   the whole cluster — it lights up on hover and while expanded. */
+.item-attachments {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 4px;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.item-attachments:hover,
+.item-attachments.open {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Chevron that rotates when expanded */
+.item-expander {
+  display: inline-flex;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.item-attachments.open .item-expander {
+  transform: rotate(90deg);
+}
+
+/* "+N" chip: N extra attachments available; lights up when ticked */
+.item-extra-count {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 5px;
+  line-height: 14px;
+}
+
+.item-extra-count.active {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* On hover/open the chip blends into the accent pill */
+.item-attachments:hover .item-extra-count,
+.item-attachments.open .item-extra-count {
+  color: var(--accent);
+  border-color: transparent;
+  background: transparent;
+}
+
+/* Attachment sub-rows revealed by the chevron */
+.item-subrows {
+  display: none;
+}
+
+.item-subrows.open {
+  display: block;
+}
+
+/* Muted anchor row showing what the parent checkbox refers to */
+.item-main-info {
+  padding: 3px 8px 3px 24px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  background: var(--bg-muted);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-subrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 24px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+
+.item-subrow:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.item-block:last-child .item-subrow:last-child {
+  border-bottom: none;
+}
+
+.item-subrow:hover {
+  background: var(--bg-hover);
+}
+
+.item-subrow input[type="checkbox"] {
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.item-subrow-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.item-subrow-meta {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.item-subrow.uploaded {
+  cursor: default;
+}
+
+.item-subrow.uploaded:hover {
+  background: none;
+}
+
+.item-subrow.uploaded .item-subrow-name {
+  color: var(--text-muted);
 }
 
 /* ─── Updates tab ────────────────────────────────────────────────── */

@@ -38,6 +38,24 @@ export interface ExportableItem {
   itemKey: string;
   exportType: "file" | "url";
   url?: string;
+  // All selectable upload units for this item (default unit first).
+  // Top-level fields above always describe the DEFAULT unit, so older
+  // extensions that ignore this field keep working unchanged.
+  units?: AttachmentUnit[];
+}
+
+export interface AttachmentUnit {
+  // "att-<attachmentId>" for real attachments,
+  // "url-<hash>" for metadata-derived URLs (item URL / DOI / PMCID)
+  unitId: string;
+  kind: "file" | "url";
+  attachmentId: number; // 0 for metadata-URL units
+  title: string;
+  contentType: string; // file MIME or "text/url"
+  filename: string; // files only
+  fileSize: number; // files only
+  url?: string; // url units only
+  isDefault: boolean;
 }
 
 export interface FileData {
@@ -331,17 +349,181 @@ async function buildExportableList(
 }
 
 /**
- * Tries to turn one Zotero item into a single exportable payload.
- * Prefers a local file attachment; falls back to a URL/DOI source.
+ * URL candidate for NotebookLM web-source export.
+ * `attachmentId` is set when the URL comes from an attachment (stable
+ * `att-<id>` unit key); 0 for metadata-derived URLs.
+ */
+interface UrlCandidate {
+  url: string;
+  attachmentId: number;
+  title: string;
+}
+
+/**
+ * Collects every distinct URL candidate for an item, ranked best-first
+ * (open-access archives preferred, bot-protected publishers last).
+ * Collection order mirrors the historical getItemUrl order so the
+ * best-ranked pick is identical to previous versions; a metadata URL that
+ * duplicates an attachment URL adopts that attachment's identity.
+ */
+function getItemUrlCandidates(
+  item: Zotero.Item,
+  atts: Zotero.Item[],
+): UrlCandidate[] {
+  const seen = new Set<string>();
+  const candidates: UrlCandidate[] = [];
+
+  const norm = (url: string) => url.toLowerCase().replace(/\/+$/, "");
+  const domainOf = (url: string) => {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return url;
+    }
+  };
+  const push = (url: string, attachmentId = 0, title = "") => {
+    const key = norm(url);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    candidates.push({ url, attachmentId, title: title || domainOf(url) });
+  };
+
+  try {
+    const url = item.getField("url") as string;
+    if (url) push(url);
+  } catch {
+    /* ignore */
+  }
+
+  // Attachment URLs
+  for (const att of atts) {
+    try {
+      const attUrl = att.getField("url") as string;
+      if (attUrl) push(attUrl, att.id, (att.getField("title") as string) || "");
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // DOI as last resort
+  try {
+    const doi = item.getField("DOI") as string;
+    if (doi) {
+      push(doi.startsWith("http") ? doi : `https://doi.org/${doi}`);
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Also try to construct a PMC link from PMCID if available
+  try {
+    const extra = item.getField("extra") as string;
+    if (extra) {
+      const pmcMatch = extra.match(/PMCID:\s*(PMC\d+)/i);
+      if (pmcMatch) {
+        push(`https://pmc.ncbi.nlm.nih.gov/articles/${pmcMatch[1]}/`);
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  if (candidates.length === 0) return [];
+
+  // Rank URLs: prefer open-access / crawler-friendly sources
+  const rank = (url: string): number => {
+    const u = url.toLowerCase();
+    // Best: open archives with no bot protection
+    if (u.includes("pmc.ncbi.nlm.nih.gov")) return 0;
+    if (u.includes("europepmc.org")) return 0;
+    if (u.includes("arxiv.org")) return 1;
+    if (u.includes("biorxiv.org")) return 1;
+    if (u.includes("medrxiv.org")) return 1;
+    if (u.includes("ncbi.nlm.nih.gov/pmc")) return 1;
+    // Decent: repositories and preprint servers
+    if (u.includes("semanticscholar.org")) return 2;
+    if (u.includes("researchgate.net")) return 3;
+    // Avoid: PubMed abstract pages (reCAPTCHA)
+    if (u.includes("pubmed.ncbi.nlm.nih.gov")) return 6;
+    // Avoid: DOI redirects (Cloudflare on publishers)
+    if (u.includes("doi.org/")) return 7;
+    // Avoid: known bot-protected publishers
+    if (u.includes("science.org")) return 8;
+    if (u.includes("nature.com")) return 8;
+    if (u.includes("springer.com")) return 8;
+    if (u.includes("wiley.com")) return 8;
+    if (u.includes("elsevier.com") || u.includes("sciencedirect.com")) return 8;
+    if (u.includes("cell.com")) return 8;
+    if (u.includes("oup.com")) return 8;
+    if (u.includes("tandfonline.com")) return 8;
+    // Everything else: middle ground
+    return 5;
+  };
+
+  // Stable sort keeps today's collection-order tie-break, so the default
+  // pick (first candidate) is unchanged from previous versions.
+  candidates.sort((a, b) => rank(a.url) - rank(b.url));
+
+  // A metadata URL identical to an attachment URL adopts the attachment's
+  // identity (stable att-<id> unit key + attachment title).
+  for (const c of candidates) {
+    if (c.attachmentId !== 0) continue;
+    const key = norm(c.url);
+    const att = atts.find(
+      (a) => a.getField("url") && norm(a.getField("url") as string) === key,
+    );
+    if (att) {
+      c.attachmentId = att.id;
+      c.title = (att.getField("title") as string) || c.title;
+    }
+  }
+
+  return candidates;
+}
+
+/** Compact stable id for a metadata-derived URL unit. */
+function urlUnitId(url: string): string {
+  let hash = 5381;
+  const s = url.toLowerCase().replace(/\/+$/, "");
+  for (let i = 0; i < s.length; i++) {
+    hash = (hash << 5) + hash + s.charCodeAt(i);
+    hash |= 0;
+  }
+  return `url-${Math.abs(hash)}`;
+}
+
+function candidateToUnit(c: UrlCandidate, isDefault: boolean): AttachmentUnit {
+  return {
+    unitId: c.attachmentId ? `att-${c.attachmentId}` : urlUnitId(c.url),
+    kind: "url",
+    attachmentId: c.attachmentId,
+    title: c.title || c.url,
+    contentType: "text/url",
+    filename: "",
+    fileSize: 0,
+    url: c.url,
+    isDefault,
+  };
+}
+
+/**
+ * Turns one Zotero item into an exportable payload listing ALL selectable
+ * attachments. The default unit is Zotero's best attachment (the one opened
+ * on click) when it is an exportable file, else the first exportable file
+ * attachment, else the best-ranked URL. Items without any file attachment
+ * or URL candidate are excluded (null).
  */
 async function exportSingleItem(
   item: Zotero.Item,
 ): Promise<ExportableItem | null> {
-  // Strategy 1: Look for a local file attachment (PDF, DOCX, etc.)
   const attachmentIDs = item.getAttachments();
+  const atts: Zotero.Item[] = [];
+  const fileUnits: AttachmentUnit[] = [];
+
   for (const attID of attachmentIDs) {
     const att = Zotero.Items.get(attID);
     if (!att) continue;
+    atts.push(att);
 
     const isFile =
       att.isFileAttachment() ||
@@ -382,131 +564,76 @@ async function exportSingleItem(
     }
     if (!fileExists) continue;
 
-    const effectiveContentType =
-      contentType || extToContentType(ext) || "application/octet-stream";
-
-    return {
-      itemId: item.id,
-      title: item.getField("title") as string,
+    fileUnits.push({
+      unitId: `att-${att.id}`,
+      kind: "file",
       attachmentId: att.id,
-      attachmentTitle: att.getField("title") as string,
-      contentType: effectiveContentType,
+      title: (att.getField("title") as string) || filename,
+      contentType:
+        contentType || extToContentType(ext) || "application/octet-stream",
       filename,
       fileSize,
-      itemKey: item.key,
-      exportType: "file",
-    };
+      isDefault: false,
+    });
   }
 
-  // Strategy 2: No local file — export as URL source for NotebookLM
-  const url = getItemUrl(item);
-  if (url) {
+  const candidates = getItemUrlCandidates(item, atts);
+
+  // File item: default = Zotero's best attachment (the one opened on click)
+  // when it is among the exportable file units; else the first file unit.
+  if (fileUnits.length > 0) {
+    let defaultIdx = 0;
+    try {
+      const best = await item.getBestAttachment();
+      if (best) {
+        const idx = fileUnits.findIndex((u) => u.attachmentId === best.id);
+        if (idx !== -1) defaultIdx = idx;
+      }
+    } catch {
+      // fall back to the first file unit
+    }
+
+    const defaultUnit = fileUnits[defaultIdx];
+    defaultUnit.isDefault = true;
+    const otherFiles = fileUnits.filter((_, i) => i !== defaultIdx);
+    // Extra units for file items: remaining files + attachment-sourced URLs
+    // (linked-URL attachments, snapshot source URLs, file-attachment URLs).
+    const urlUnits = candidates
+      .filter((c) => c.attachmentId !== 0)
+      .map((c) => candidateToUnit(c, false));
+
     return {
       itemId: item.id,
       title: item.getField("title") as string,
-      attachmentId: 0,
-      attachmentTitle: "",
-      contentType: "text/url",
-      filename: "",
-      fileSize: 0,
+      attachmentId: defaultUnit.attachmentId,
+      attachmentTitle: defaultUnit.title,
+      contentType: defaultUnit.contentType,
+      filename: defaultUnit.filename,
+      fileSize: defaultUnit.fileSize,
       itemKey: item.key,
-      exportType: "url",
-      url,
+      exportType: "file",
+      units: [defaultUnit, ...otherFiles, ...urlUnits],
     };
   }
 
-  return null;
-}
-
-/**
- * Gets the best URL for a Zotero item.
- * Prefers DOI > URL field > attachment URL.
- */
-function getItemUrl(item: Zotero.Item): string | null {
-  // Collect all candidate URLs, then pick the best one.
-  // Goal: avoid bot-protected URLs (publishers, PubMed) and prefer
-  // open-access archives (PMC, Europe PMC, bioRxiv, arXiv, etc.)
-  const candidates: string[] = [];
-
-  try {
-    const url = item.getField("url") as string;
-    if (url) candidates.push(url);
-  } catch {
-    /* ignore */
-  }
-
-  // Attachment URLs
-  const attachmentIDs = item.getAttachments();
-  for (const attID of attachmentIDs) {
-    const att = Zotero.Items.get(attID);
-    if (!att) continue;
-    try {
-      const attUrl = att.getField("url") as string;
-      if (attUrl) candidates.push(attUrl);
-    } catch {
-      /* ignore */
-    }
-  }
-
-  // DOI as last resort
-  try {
-    const doi = item.getField("DOI") as string;
-    if (doi) {
-      candidates.push(doi.startsWith("http") ? doi : `https://doi.org/${doi}`);
-    }
-  } catch {
-    /* ignore */
-  }
-
-  // Also try to construct a PMC link from PMCID if available
-  try {
-    const extra = item.getField("extra") as string;
-    if (extra) {
-      const pmcMatch = extra.match(/PMCID:\s*(PMC\d+)/i);
-      if (pmcMatch) {
-        candidates.push(
-          `https://pmc.ncbi.nlm.nih.gov/articles/${pmcMatch[1]}/`,
-        );
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-
+  // No local file — URL item: default = best-ranked candidate (today's pick)
   if (candidates.length === 0) return null;
+  const units = candidates.map((c, i) => candidateToUnit(c, i === 0));
+  const defaultUnit = units[0];
 
-  // Rank URLs: prefer open-access / crawler-friendly sources
-  const rank = (url: string): number => {
-    const u = url.toLowerCase();
-    // Best: open archives with no bot protection
-    if (u.includes("pmc.ncbi.nlm.nih.gov")) return 0;
-    if (u.includes("europepmc.org")) return 0;
-    if (u.includes("arxiv.org")) return 1;
-    if (u.includes("biorxiv.org")) return 1;
-    if (u.includes("medrxiv.org")) return 1;
-    if (u.includes("ncbi.nlm.nih.gov/pmc")) return 1;
-    // Decent: repositories and preprint servers
-    if (u.includes("semanticscholar.org")) return 2;
-    if (u.includes("researchgate.net")) return 3;
-    // Avoid: PubMed abstract pages (reCAPTCHA)
-    if (u.includes("pubmed.ncbi.nlm.nih.gov")) return 6;
-    // Avoid: DOI redirects (Cloudflare on publishers)
-    if (u.includes("doi.org/")) return 7;
-    // Avoid: known bot-protected publishers
-    if (u.includes("science.org")) return 8;
-    if (u.includes("nature.com")) return 8;
-    if (u.includes("springer.com")) return 8;
-    if (u.includes("wiley.com")) return 8;
-    if (u.includes("elsevier.com") || u.includes("sciencedirect.com")) return 8;
-    if (u.includes("cell.com")) return 8;
-    if (u.includes("oup.com")) return 8;
-    if (u.includes("tandfonline.com")) return 8;
-    // Everything else: middle ground
-    return 5;
+  return {
+    itemId: item.id,
+    title: item.getField("title") as string,
+    attachmentId: 0,
+    attachmentTitle: "",
+    contentType: "text/url",
+    filename: "",
+    fileSize: 0,
+    itemKey: item.key,
+    exportType: "url",
+    url: defaultUnit.url,
+    units,
   };
-
-  candidates.sort((a, b) => rank(a) - rank(b));
-  return candidates[0];
 }
 
 function extToContentType(ext: string): string | null {

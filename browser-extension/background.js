@@ -251,6 +251,61 @@ function notesCacheKey(notebookId) {
 // ─── Forward Sync ────────────────────────────────────────────────────
 
 /**
+ * Normalizes an item (new plugin with `units`, or legacy shape) into a unit
+ * list. Legacy items get a single default unit synthesized from their
+ * top-level fields. Must stay in sync with the popup's copy.
+ */
+function ensureUnits(item) {
+  if (Array.isArray(item.units) && item.units.length > 0) return item.units;
+  return item.exportType === "file"
+    ? [
+        {
+          unitId: "att-" + item.attachmentId,
+          kind: "file",
+          attachmentId: item.attachmentId,
+          title: item.attachmentTitle || item.title,
+          contentType: item.contentType,
+          filename: item.filename,
+          fileSize: item.fileSize,
+          isDefault: true,
+        },
+      ]
+    : [
+        {
+          unitId: "item-url",
+          kind: "url",
+          attachmentId: 0,
+          title: item.title || item.url,
+          contentType: "text/url",
+          filename: "",
+          fileSize: 0,
+          url: item.url,
+          isDefault: true,
+        },
+      ];
+}
+
+/**
+ * Canonical marker/selection key for one unit. The default unit keeps the
+ * bare itemKey so historical per-item markers stay valid.
+ */
+function unitKey(item, unit) {
+  return unit.isDefault ? item.itemKey : item.itemKey + "::" + unit.unitId;
+}
+
+/** Display title for progress and failure lists. */
+function unitTitle(p) {
+  return p.unit.filename || p.unit.title || p.item.title;
+}
+
+/** Display/marker name for a URL unit (item context for defaults). */
+function urlUnitName(p) {
+  return p.unit.isDefault
+    ? p.item.title || p.unit.url || ""
+    : p.unit.title || p.item.title || p.unit.url || "";
+}
+
+/**
  * Performs forward sync: gets items from Zotero and returns them
  * so the popup can display what will be synced. Actual injection
  * happens per-item via addUrlSource or file injection.
@@ -262,6 +317,7 @@ async function forwardSync(
   libraryId,
   libraryName,
   tag,
+  selectedUnits,
 ) {
   // 1. Resolve which NotebookLM tab to target
   const { tab, reason } = await resolveNotebookLMTab();
@@ -313,6 +369,7 @@ async function forwardSync(
     libraryId,
     libraryName,
     tag,
+    selectedUnits,
   )
     .then((result) => {
       // Release the sync lock BEFORE broadcasting "done" so the popup's
@@ -351,6 +408,7 @@ async function forwardSyncImpl(
   libraryId,
   libraryName,
   tag,
+  selectedUnits,
 ) {
   // 1b. Set notebook title to the collection/tag name (user can change it later)
   if (collectionName) {
@@ -533,14 +591,29 @@ async function forwardSyncImpl(
     /* mapping fetch is best-effort; fall back to local cache */
   }
 
-  const selectedSet = selectedItemKeys ? new Set(selectedItemKeys) : null;
-  const newItems = items.filter(
-    (item) =>
-      !syncedHashes[item.itemKey] &&
-      (!selectedSet || selectedSet.has(item.itemKey)),
-  );
+  // Selection: canonical unit keys. `selectedUnits` (new popup) wins; a
+  // legacy `selectedItemKeys` list is interpreted as default-unit keys so an
+  // old caller never gets surprise extra attachments. null = all defaults.
+  const selectedUnitSet = selectedUnits
+    ? new Set(selectedUnits)
+    : selectedItemKeys
+      ? new Set(selectedItemKeys)
+      : null;
 
-  if (newItems.length === 0) {
+  // Pending upload units: every not-yet-synced selected unit of every item.
+  // Per-unit granularity means an item already synced for its main PDF still
+  // exposes its other attachments for upload.
+  const pending = [];
+  for (const item of items) {
+    for (const unit of ensureUnits(item)) {
+      const key = unitKey(item, unit);
+      if (syncedHashes[key]) continue;
+      if (selectedUnitSet && !selectedUnitSet.has(key)) continue;
+      pending.push({ item, unit, key });
+    }
+  }
+
+  if (pending.length === 0) {
     const mapping = {
       collectionId,
       collectionName,
@@ -556,7 +629,7 @@ async function forwardSyncImpl(
     await setMapping(mapping);
     return {
       success: true,
-      message: `All ${items.length} items are already synced to this notebook.`,
+      message: `All selected sources are already synced to this notebook.`,
       synced: 0,
       total: items.length,
       mapping,
@@ -564,17 +637,17 @@ async function forwardSyncImpl(
   }
 
   // 4. Separate by type
-  const urlItems = newItems.filter((i) => i.exportType === "url");
-  const fileItems = newItems.filter((i) => i.exportType === "file");
+  const urlUnits = pending.filter((p) => p.unit.kind === "url");
+  const fileUnits = pending.filter((p) => p.unit.kind === "file");
   const allResults = [];
-  const totalItems = newItems.length;
+  const totalUnits = pending.length;
   let doneCount = 0;
 
   const emitProgress = (phase, currentTitle, files) => {
     const state = {
       phase,
       current: doneCount,
-      total: totalItems,
+      total: totalUnits,
       currentTitle: currentTitle || "",
       files: files || null,
       done: false,
@@ -586,13 +659,13 @@ async function forwardSyncImpl(
 
   // 5a. Add ALL URL sources at once (NotebookLM supports multiple URLs
   // separated by newlines in a single paste)
-  if (urlItems.length > 0) {
+  if (urlUnits.length > 0) {
     emitProgress(
       "urls",
-      `Adding ${urlItems.length} URL${urlItems.length > 1 ? "s" : ""}...`,
+      `Adding ${urlUnits.length} URL${urlUnits.length > 1 ? "s" : ""}...`,
     );
     try {
-      const urls = urlItems.map((i) => i.url);
+      const urls = urlUnits.map((p) => p.unit.url);
       const result = await addUrlSourcesBatch(tab.id, urls);
       const confirmed = result.success;
 
@@ -607,29 +680,29 @@ async function forwardSyncImpl(
         }
       }
 
-      for (const item of urlItems) {
+      for (const p of urlUnits) {
         allResults.push({
-          title: item.title,
+          title: urlUnitName(p),
           success: confirmed,
           error: errorDetail,
           type: "url",
-          __itemKey: item.itemKey,
+          __unitKey: p.key,
         });
         // Provisional marker; the real NotebookLM label is bound after the sync
         // settles (step 6). `name`/`url` are fallbacks if label capture fails.
         if (confirmed) {
-          syncedHashes[item.itemKey] = {
+          syncedHashes[p.key] = {
             at: Date.now(),
-            name: item.title || item.url || "",
-            url: item.url || "",
+            name: urlUnitName(p) || "",
+            url: p.unit.url || "",
           };
         }
         doneCount++;
       }
     } catch (e) {
-      for (const item of urlItems) {
+      for (const p of urlUnits) {
         allResults.push({
-          title: item.title,
+          title: urlUnitName(p),
           success: false,
           error: e.message,
           type: "url",
@@ -644,19 +717,19 @@ async function forwardSyncImpl(
   // dropped once, then we wait for it to finish processing before the next.
   // See FILE_BATCH_SIZE / SETTLE_* constants.
 
-  if (fileItems.length > 0 && urlItems.length > 0) {
+  if (fileUnits.length > 0 && urlUnits.length > 0) {
     await sleep(2000);
   }
 
-  if (fileItems.length > 0) {
+  if (fileUnits.length > 0) {
     let debuggerAttached = false;
     try {
       await chrome.debugger.attach({ tabId: tab.id }, "1.3");
       debuggerAttached = true;
     } catch (e) {
-      for (const item of fileItems) {
+      for (const p of fileUnits) {
         allResults.push({
-          title: item.title,
+          title: unitTitle(p),
           success: false,
           error: `Debugger failed: ${e.message}`,
           type: "file",
@@ -667,17 +740,17 @@ async function forwardSyncImpl(
 
     if (debuggerAttached) {
       try {
-        // Fetch file data (base64) from Zotero for each file
+        // Fetch file data (base64) from Zotero for each file unit
         const resolvedFiles = [];
-        for (const item of fileItems) {
+        for (const p of fileUnits) {
           let fileRes;
           try {
-            fileRes = await getFile(item.attachmentId);
+            fileRes = await getFile(p.unit.attachmentId);
           } catch (e) {
             // Connection/LNA failure or timeout — e.message carries the
-            // chrome://extensions guidance. Record per-item and keep going.
+            // chrome://extensions guidance. Record per-unit and keep going.
             allResults.push({
-              title: item.title,
+              title: unitTitle(p),
               success: false,
               error: e.message,
               type: "file",
@@ -687,14 +760,14 @@ async function forwardSyncImpl(
           }
           if (!fileRes.success || !fileRes.data) {
             allResults.push({
-              title: item.title,
+              title: unitTitle(p),
               success: false,
               error: "Could not fetch file from Zotero",
               type: "file",
             });
             doneCount++;
           } else {
-            resolvedFiles.push({ item, fileData: fileRes.data });
+            resolvedFiles.push({ ...p, fileData: fileRes.data });
           }
         }
 
@@ -711,11 +784,11 @@ async function forwardSyncImpl(
           if (cancelledSyncs.has(tab.id)) {
             for (let j = bi; j < resolvedFiles.length; j++) {
               allResults.push({
-                title: resolvedFiles[j].item.title,
+                title: unitTitle(resolvedFiles[j]),
                 success: false,
                 error: "Cancelled",
                 type: "file",
-                __itemKey: resolvedFiles[j].item.itemKey,
+                __unitKey: resolvedFiles[j].key,
               });
             }
             break;
@@ -730,7 +803,7 @@ async function forwardSyncImpl(
           }));
 
           // Show every file in this batch as a bulleted list in the popup.
-          const batchTitles = batch.map((p) => p.item.title);
+          const batchTitles = batch.map((p) => unitTitle(p));
           const batchLabel =
             batch.length > 1
               ? `Uploading ${batch.length} files`
@@ -818,16 +891,16 @@ async function forwardSyncImpl(
 
           for (const p of batch) {
             allResults.push({
-              title: p.item.title,
+              title: unitTitle(p),
               success: ok,
               error: ok ? undefined : "Upload not confirmed",
               type: "file",
-              __itemKey: p.item.itemKey,
+              __unitKey: p.key,
             });
             // Provisional marker; the real NotebookLM label is bound after the
             // sync settles (step 6). `name` is a fallback if capture fails.
             if (ok)
-              syncedHashes[p.item.itemKey] = {
+              syncedHashes[p.key] = {
                 at: Date.now(),
                 name: p.fileData.filename || p.item.title || "",
               };
@@ -870,8 +943,8 @@ async function forwardSyncImpl(
       // Match URL items by favicon domain.
       const remaining = [...liveSources];
       for (const r of allResults) {
-        if (!r.success || r.type !== "url" || !r.__itemKey) continue;
-        const marker = syncedHashes[r.__itemKey];
+        if (!r.success || r.type !== "url" || !r.__unitKey) continue;
+        const marker = syncedHashes[r.__unitKey];
         if (!marker || typeof marker !== "object") continue;
         const wantUrl = norm(marker.url);
         const hitIdx = remaining.findIndex(
@@ -891,8 +964,8 @@ async function forwardSyncImpl(
       // to positional binding only if the exact match misses.
       const fileLeftovers = remaining.filter((s) => !s.faviconDomain);
       for (const r of allResults) {
-        if (!r.success || r.type !== "file" || !r.__itemKey) continue;
-        const marker = syncedHashes[r.__itemKey];
+        if (!r.success || r.type !== "file" || !r.__unitKey) continue;
+        const marker = syncedHashes[r.__unitKey];
         if (!marker || typeof marker !== "object") continue;
         const want = String(marker.name || "").trim();
         let hitIdx = want
@@ -937,8 +1010,8 @@ async function forwardSyncImpl(
   const wasCancelled = cancelledSyncs.has(tab.id);
 
   let message = wasCancelled
-    ? `Sync cancelled — ${successCount} of ${newItems.length} uploaded before stopping.`
-    : `Synced ${successCount}/${newItems.length} items (${urlItems.length} URLs, ${fileItems.length} files).`;
+    ? `Sync cancelled — ${successCount} of ${pending.length} uploaded before stopping.`
+    : `Synced ${successCount}/${pending.length} sources (${urlUnits.length} URLs, ${fileUnits.length} files).`;
   if (failCount > 0 && !wasCancelled) {
     const failed = allResults.filter((r) => !r.success);
     const titlePreview = failed
@@ -4108,6 +4181,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           message.libraryId,
           message.libraryName,
           message.tag,
+          message.selectedUnits,
         );
 
       case "n2z-sync-status": {

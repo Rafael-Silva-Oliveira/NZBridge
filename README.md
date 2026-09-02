@@ -39,6 +39,7 @@ NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/
 
 ### Forward Sync (Zotero -> NotebookLM)
 - **Selective sync** — After selecting a collection, choose exactly which PDFs and URLs to upload before syncing
+- **Per-attachment selection** — Items with several attachments (supplementary PDFs, link attachments, alternate URLs) show a ▸ in the item list — expand to pick exactly which ones to upload. By default the main attachment (the one Zotero opens when you click the item) is synced
 - **PDF upload** — Local PDF attachments are uploaded directly to NotebookLM as sources
 - **URL sources** — Items without local files are synced as web sources using their best available URL
 - **Batch processing** — Multiple URLs are pasted in a single operation
@@ -142,7 +143,7 @@ Upload PDFs and URLs from a Zotero collection as sources in a NotebookLM noteboo
 2. Open [NotebookLM](https://notebooklm.google.com/) in your browser and create or open a notebook
 3. Click the **NZBridge extension icon** in your toolbar
 4. In the **"To NotebookLM"** tab, select a Zotero collection from the dropdown
-5. Review the item list — PDFs and URLs are shown in separate groups. Uncheck any items you don't want to upload
+5. Review the item list — PDFs and URLs are shown in separate groups. Uncheck any items you don't want to upload. Items with multiple attachments show a ▸ — expand the item to select specific attachments (the main attachment is synced by default)
 
    ![NZBridge popup — collection selected, ready to sync](docs/01-forward-sync-ready.png)
 
