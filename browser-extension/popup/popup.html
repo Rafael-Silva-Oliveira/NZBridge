@@ -123,8 +123,12 @@
                   >PDFs <span id="file-count" class="item-group-count"></span
                 ></span>
               </label>
+              <button type="button" class="item-group-chevron" data-group="files"
+                aria-expanded="true" title="Collapse / expand PDFs">▾</button>
             </div>
             <div id="files-container" class="item-rows"></div>
+            <div class="item-group-resize" data-group="files"
+              title="Drag to resize — double-click to reset"></div>
           </div>
           <div class="item-group" id="group-urls">
             <div class="item-group-header">
@@ -134,8 +138,12 @@
                   >Web URLs <span id="url-count" class="item-group-count"></span
                 ></span>
               </label>
+              <button type="button" class="item-group-chevron" data-group="urls"
+                aria-expanded="true" title="Collapse / expand Web URLs">▾</button>
             </div>
             <div id="urls-container" class="item-rows"></div>
+            <div class="item-group-resize" data-group="urls"
+              title="Drag to resize — double-click to reset"></div>
           </div>
         </div>
       </div>
@@ -285,8 +293,52 @@
 
       <div class="update-section">
         <h3 class="update-version">
-          v0.5.0 <span class="update-tag current">Current</span>
+          v0.5.1 <span class="update-tag current">Current</span>
         </h3>
+        <ul class="update-list">
+          <li>
+            Every attachment is now its own checkbox row: expanding an item
+            shows the main attachment pre-ticked (labeled "Main ·") next to
+            its supplementary PDFs and links — untick the main there if you
+            only want one of the other attachments
+          </li>
+          <li>
+            Hovering a row shows the full attachment filename, so long titles
+            are easy to tell apart; attachment rows display the filename
+            (matching the name NotebookLM gives the source) instead of the
+            Zotero item title
+          </li>
+          <li>
+            Collapsible PDFs / Web URL groups (▾) and drag-to-resize group
+            panes — both remembered between opens
+          </li>
+          <li>
+            "Check notebook" now reliably detects sources you deleted in
+            NotebookLM and clears them for re-upload — including individual
+            attachments of the same paper, and even if you removed every
+            source — even while other sources are still processing. When a
+            check can't read the notebook, it says so instead of implying
+            nothing was deleted, and the result lists each cleared source as a
+            bullet
+          </li>
+          <li>
+            Fixed: ticking the main attachment could upload a different file
+            than the one shown (the exact attachment you tick is now uploaded)
+          </li>
+          <li>
+            Your tick selection is kept across uploads and "Check notebook"
+            re-renders, and even when the popup is closed and reopened
+          </li>
+          <li>
+            ✓ markers now name the exact source in the notebook on hover and
+            explain how to replace it (delete the source in NotebookLM, then
+            Check notebook)
+          </li>
+        </ul>
+      </div>
+
+      <div class="update-section">
+        <h3 class="update-version">v0.5.0</h3>
         <ul class="update-list">
           <li>
             Choose which attachments to upload: items with several attachments

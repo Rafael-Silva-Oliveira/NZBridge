@@ -887,11 +887,136 @@ async function loadNotebookInfo() {
 
 // Stores loaded items so handleForwardSync can read selected keys
 window._previewItems = [];
+// Remembers the user's tick state across re-renders AND popup close/reopen
+// (the popup dies when the user clicks into NotebookLM to manage sources, so
+// in-memory state is lost exactly when it matters). Keyed by sync source;
+// stored in chrome.storage.local. Null/unset = render defaults (main ON,
+// extras OFF) until the user interacts.
+window._userSelection = null;
+window._selectionSourceKey = null;
+
+// Re-reads the rendered checkboxes into the preserved-selection set and
+// persists it for the next popup open.
+function recordSelection() {
+  window._userSelection = new Set(getSelectedUnits());
+  if (window._selectionSourceKey) {
+    savePreservedSelection(window._selectionSourceKey, [...window._userSelection]);
+  }
+}
+
+const SELECTION_KEEP = 10; // remembered sources (newest win)
+
+async function loadPreservedSelection(sourceKey) {
+  try {
+    const { selectionState } = await chrome.storage.local.get("selectionState");
+    const units = selectionState?.[sourceKey]?.units;
+    return Array.isArray(units) ? new Set(units) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function savePreservedSelection(sourceKey, units) {
+  try {
+    const { selectionState } = await chrome.storage.local.get("selectionState");
+    const next = { ...(selectionState || {}) };
+    next[sourceKey] = { units, at: Date.now() };
+    // Keep only the newest entries so storage can't grow unbounded.
+    const keep = Object.entries(next)
+      .sort((a, b) => (b[1].at || 0) - (a[1].at || 0))
+      .slice(0, SELECTION_KEEP);
+    await chrome.storage.local.set({
+      selectionState: Object.fromEntries(keep),
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+// Desired checkbox state for a unit: the user's preserved selection when one
+// exists, else the defaults (main ON, extras OFF).
+function preservedChecked(item, unit) {
+  const sel = window._userSelection;
+  if (sel) return sel.has(`${item.itemKey}::${unit.unitId}`);
+  return !!unit.isDefault;
+}
 
 /**
  * Previews items for a sync source.
  * @param {null|{collectionId:number}|{libraryId:number,tag:string}} source
  */
+// Resizable groups: each group (PDFs / Web URLs) has a drag handle under its
+// rows; dragging gives the rows a fixed, internally scrollable height (80px
+// min; max = nearly the full popup height), persisted per group in
+// chrome.storage.local. Double-click resets.
+const GROUP_ROWS_MIN_H = 80;
+
+function clampGroupHeight(h) {
+  // Normal popups AUTO-SIZE to their content, so innerHeight grows with the
+  // drag — using it as the max would chase the fold and always stop at the
+  // same visible size. Popups are hard-capped at ~600px by Chrome: fixed
+  // 510px budget. The pinned window is a real resizable window — its live
+  // height is the true budget and follows the user's resize.
+  const isPinned = new URLSearchParams(location.search).has("pinned");
+  const max = isPinned
+    ? Math.max(240, Math.round(window.innerHeight - 90))
+    : 510;
+  return Math.min(max, Math.max(GROUP_ROWS_MIN_H, Math.round(h)));
+}
+
+function groupRowsEl(key) {
+  return document.getElementById(key === "files" ? "files-container" : "urls-container");
+}
+
+function applyGroupHeights() {
+  chrome.storage.local
+    .get("groupHeights")
+    .then(({ groupHeights }) => {
+      if (!groupHeights) return;
+      for (const key of ["files", "urls"]) {
+        const h = groupHeights[key];
+        const rows = groupRowsEl(key);
+        if (!rows || !h) continue;
+        rows.style.height = `${h}px`;
+        rows.closest(".item-group")?.classList.add("resized");
+      }
+    })
+    .catch(() => {});
+}
+
+async function saveGroupHeight(key, h) {
+  try {
+    const { groupHeights } = await chrome.storage.local.get("groupHeights");
+    await chrome.storage.local.set({
+      groupHeights: { ...(groupHeights || {}), [key]: h },
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+// Collapsible PDFs / Web URLs groups. State persists in chrome.storage.local
+// so a collapsed group stays collapsed across re-renders and popup reopen.
+async function applyGroupCollapse() {
+  try {
+    const { groupCollapsed } = await chrome.storage.local.get("groupCollapsed");
+    for (const [key, groupId] of [
+      ["files", "group-files"],
+      ["urls", "group-urls"],
+    ]) {
+      const group = document.getElementById(groupId);
+      if (!group) continue;
+      const collapsed = !!(groupCollapsed && groupCollapsed[key]);
+      group.classList.toggle("collapsed", collapsed);
+      group
+        .querySelector(".item-group-chevron")
+        ?.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    }
+  } catch {
+    /* non-fatal */
+  }
+}
+
 async function previewItems(source) {
   const preview = document.getElementById("item-preview");
   const summary = document.getElementById("item-summary");
@@ -928,6 +1053,21 @@ async function previewItems(source) {
 
   const items = result.data;
   window._previewItems = items;
+
+  // Selection persistence: same source as the previous render → snapshot
+  // whatever the user last left on screen; a different collection/tag loads
+  // its remembered selection from storage (survives popup close/reopen) or
+  // starts fresh with the defaults.
+  const sourceKey = source.tag
+    ? `tag:${source.libraryId}:${source.tag}`
+    : `col:${source.collectionId}`;
+  if (window._selectionSourceKey !== sourceKey) {
+    window._selectionSourceKey = sourceKey;
+    window._userSelection = await loadPreservedSelection(sourceKey);
+  } else {
+    window._userSelection = new Set(getSelectedUnits());
+    savePreservedSelection(sourceKey, [...window._userSelection]);
+  }
 
   const fileItems = items.filter((i) => i.exportType === "file");
   const urlItems = items.filter((i) => i.exportType === "url");
@@ -1003,6 +1143,10 @@ async function previewItems(source) {
   itemList.classList.remove("hidden");
   syncBtn.disabled = false;
   resetBtn.disabled = false;
+  // Re-apply persisted collapse + heights so both survive re-renders
+  // (selection inside hidden groups is still submitted).
+  await applyGroupCollapse();
+  applyGroupHeights();
   // "Check notebook" is useful only when something is marked uploaded.
   if (checkBtn) checkBtn.disabled = uploadedCount === 0;
 
@@ -1010,30 +1154,33 @@ async function previewItems(source) {
   // per-attachment sub-checkboxes; disabled when every item is already
   // uploaded). Their state mirrors the parent checkboxes: mains start
   // ticked by default, so select-all starts ticked too.
+  // Group select-all checkboxes toggle the MAIN attachments only (never the
+  // per-attachment extras). The main's checkbox exists in TWO places — the
+  // item row and the expanded "Main ·" row — both carry data-default="1" and
+  // are kept in sync, so one selector covers both. Disabled when every item
+  // is already uploaded.
   const filesParents = filesContainer.querySelectorAll(
-    '.item-row-main > input[type="checkbox"]',
+    'input[data-default="1"]',
   );
-  const urlsParents = urlsContainer.querySelectorAll(
-    '.item-row-main > input[type="checkbox"]',
-  );
+  const urlsParents = urlsContainer.querySelectorAll('input[data-default="1"]');
   document.getElementById("select-all-files").checked =
     filesParents.length > 0 && [...filesParents].every((cb) => cb.checked);
   document.getElementById("select-all-urls").checked =
     urlsParents.length > 0 && [...urlsParents].every((cb) => cb.checked);
-  document.getElementById("select-all-files").disabled =
-    !filesContainer.querySelector('.item-row-main > input[type="checkbox"]');
-  document.getElementById("select-all-urls").disabled =
-    !urlsContainer.querySelector('.item-row-main > input[type="checkbox"]');
+  document.getElementById("select-all-files").disabled = filesParents.length === 0;
+  document.getElementById("select-all-urls").disabled = urlsParents.length === 0;
   document.getElementById("select-all-files").onchange = (e) => {
     filesContainer
-      .querySelectorAll('.item-row-main > input[type="checkbox"]')
+      .querySelectorAll('input[data-default="1"]')
       .forEach((cb) => (cb.checked = e.target.checked));
+    recordSelection();
     updateSyncButtonState();
   };
   document.getElementById("select-all-urls").onchange = (e) => {
     urlsContainer
-      .querySelectorAll('.item-row-main > input[type="checkbox"]')
+      .querySelectorAll('input[data-default="1"]')
       .forEach((cb) => (cb.checked = e.target.checked));
+    recordSelection();
     updateSyncButtonState();
   };
 
@@ -1047,6 +1194,17 @@ async function previewItems(source) {
     )
     .forEach((cb) => {
       cb.onchange = () => {
+        // The main attachment has TWO checkboxes (item row + expanded "Main"
+        // row) — keep them in sync so either can be unticked.
+        if (cb.dataset.default === "1") {
+          const block = cb.closest(".item-block");
+          block
+            ?.querySelectorAll('input[data-default="1"]')
+            .forEach((sib) => {
+              if (sib !== cb) sib.checked = cb.checked;
+            });
+        }
+        recordSelection();
         refreshExtraChips(filesContainer);
         refreshExtraChips(urlsContainer);
         updateSyncButtonState();
@@ -1094,6 +1252,55 @@ function groupCountLabel(items, markers) {
   return uploaded > 0
     ? `(${items.length - uploaded} new · ${uploaded} uploaded)`
     : `(${items.length})`;
+}
+
+// Result text for "Check notebook". A blocked check must say WHY it was
+// blocked — "all sources still in the notebook" would be a lie when the
+// read was busy/unreadable/partial and the user just deleted a source.
+// Cleared sources render as a bulleted list (built via DOM — names come
+// from NotebookLM labels and must not be injected as HTML).
+function renderCheckNotebookResult(rec, clearedKeys, clearedNames) {
+  const resultDiv = document.getElementById("sync-result");
+  resultDiv.classList.remove("hidden");
+  resultDiv.className = "result success";
+  resultDiv.textContent = "";
+
+  const note = rec?.note;
+  if (note) {
+    resultDiv.textContent = checkNotebookMessage(rec, clearedKeys, clearedNames);
+    return;
+  }
+  if (clearedKeys.length === 0) {
+    resultDiv.textContent = "All synced sources are still in the notebook.";
+    return;
+  }
+
+  const head = document.createElement("div");
+  head.textContent = `Cleared ${clearedKeys.length} source${clearedKeys.length > 1 ? "s" : ""} you removed in NotebookLM — tick what you want to re-upload:`;
+  head.className = "check-result-head";
+  resultDiv.appendChild(head);
+
+  const ul = document.createElement("ul");
+  ul.className = "check-cleared-list";
+  for (const name of clearedNames) {
+    const li = document.createElement("li");
+    li.textContent = name;
+    li.title = name; // full name on hover (rows wrap but stay untruncated-safe)
+    ul.appendChild(li);
+  }
+  resultDiv.appendChild(ul);
+}
+
+function checkNotebookMessage(rec, clearedKeys, clearedNames) {
+  switch (rec?.note) {
+    case "unreadable":
+      return "Could not read the notebook's source list. Make sure the Sources panel is open, then try again.";
+    case "partial":
+      return "Only part of the source list was readable (some rows not loaded) — nothing was cleared. Scroll the sources list in NotebookLM and try again.";
+    case "mapping":
+      return "Could not update the sync record in Zotero — nothing was cleared. Is Zotero running?";
+  }
+  return "All synced sources are still in the notebook.";
 }
 
 // ─── Attachment units ─────────────────────────────────────────────────
@@ -1202,13 +1409,18 @@ function makeItemBlock(item, markers) {
   const extras = units.filter((u) => u !== defaultUnit);
   const uploaded = resolveUploadedUnits(item, markers);
   const defaultUploaded = uploaded.has(defaultUnit);
-  // Tooltip for ✓ rows: shows WHICH file is in the notebook, so a legacy
-  // wrong-file marker (e.g. a v0.4 DOCX upload under the item's key) is
-  // visible instead of silently pretending the main PDF is up.
-  const uploadedLabel = (m) =>
-    m && typeof m === "object" && (m.name || m.label)
-      ? `Already uploaded — source name: ${m.label || m.name}`
-      : "Already uploaded to this notebook";
+  // Tooltip for ✓ rows: shows WHICH file is in the notebook (so a legacy
+  // wrong-file marker, e.g. a v0.4 DOCX upload under the item's key, is
+  // visible instead of silently pretending the main PDF is up) and HOW to
+  // replace it — the exact flow that used to dead-end with no way to force
+  // a re-upload.
+  const uploadedLabel = (m) => {
+    const name =
+      m && typeof m === "object" && (m.name || m.label)
+        ? ` — source name: ${m.label || m.name}`
+        : "";
+    return `Already uploaded${name}. To replace or remove it: delete the source in NotebookLM, then click Check notebook.`;
+  };
   // Full name of the main attachment for hover tooltips. The row label shows
   // the ITEM title; long titles otherwise hide which FILE is the main one.
   const mainAttName =
@@ -1239,9 +1451,9 @@ function makeItemBlock(item, markers) {
   } else {
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    // Ticked by default: the main attachment is the usual thing to sync.
-    // Untick the row to upload only some of the extra attachments.
-    cb.checked = true;
+    // Ticked by default (main = the usual thing to sync) — unless the user
+    // has already shaped a selection for this source, which is preserved.
+    cb.checked = preservedChecked(item, defaultUnit);
     cb.dataset.itemKey = item.itemKey;
     cb.dataset.unitId = defaultUnit.unitId;
     cb.dataset.default = "1"; // parent checkbox IS the default unit
@@ -1288,18 +1500,50 @@ function makeItemBlock(item, markers) {
   }
   block.appendChild(row);
 
-  // ── Expansion: muted "Main" info row + one selectable row per extra ──
+  // ── Expansion: the MAIN attachment as a real checkbox row (pre-ticked,
+  // same control as the row checkbox above — untick either) + one row per
+  // extra. Every attachment is now visible AND individually de-selectable
+  // in the list, as the issue requested.
   if (units.length > 1) {
-    const mainInfo = document.createElement("div");
-    mainInfo.className = "item-main-info";
-    mainInfo.textContent =
+    const mainRow = document.createElement("label");
+    mainRow.className =
+      "item-subrow item-main-row" + (defaultUploaded ? " uploaded" : "");
+    if (defaultUploaded) {
+      const check = document.createElement("span");
+      check.className = "item-check";
+      check.textContent = "✓";
+      mainRow.title = uploadedLabel(uploaded.get(defaultUnit));
+      mainRow.appendChild(check);
+    } else {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = preservedChecked(item, defaultUnit); // ON by default, like the row checkbox
+      cb.dataset.itemKey = item.itemKey;
+      cb.dataset.unitId = defaultUnit.unitId;
+      cb.dataset.default = "1"; // same unit as the row checkbox
+      mainRow.appendChild(cb);
+    }
+    const mainName = document.createElement("span");
+    mainName.className = "item-subrow-name";
+    mainName.textContent = `Main · ${
       defaultUnit.kind === "file"
-        ? `Main · ${defaultUnit.filename || defaultUnit.title}${defaultUnit.fileSize ? " · " + fmtSize(defaultUnit.fileSize) : ""}`
-        : `Main · ${domainOf(defaultUnit.url)}`;
-    mainInfo.title =
+        ? defaultUnit.filename || defaultUnit.title
+        : domainOf(defaultUnit.url)
+    }`;
+    mainName.title =
       `Main attachment: ${mainAttName}\n` +
-      "The attachment Zotero opens for this item — untick the row checkbox to skip it and pick only the extra attachments.";
-    subrows.appendChild(mainInfo);
+      "The attachment Zotero opens for this item — untick this (or the row checkbox above) to skip it and pick only the extra attachments.";
+    mainRow.appendChild(mainName);
+    if (defaultUnit.kind === "file" ? defaultUnit.fileSize : defaultUnit.url) {
+      const meta = document.createElement("span");
+      meta.className = "item-subrow-meta";
+      meta.textContent =
+        defaultUnit.kind === "file"
+          ? fmtSize(defaultUnit.fileSize)
+          : "Link · " + domainOf(defaultUnit.url);
+      mainRow.appendChild(meta);
+    }
+    subrows.appendChild(mainRow);
 
     for (const unit of extras) {
       const unitUploaded = uploaded.has(unit);
@@ -1314,7 +1558,7 @@ function makeItemBlock(item, markers) {
       } else {
         const cb = document.createElement("input");
         cb.type = "checkbox";
-        cb.checked = false;
+        cb.checked = preservedChecked(item, unit);
         cb.dataset.itemKey = item.itemKey;
         cb.dataset.unitId = unit.unitId;
         sub.appendChild(cb);
@@ -1323,7 +1567,7 @@ function makeItemBlock(item, markers) {
       label.className = "item-subrow-name";
       label.textContent =
         unit.kind === "file"
-          ? unit.title || unit.filename
+          ? unit.filename || unit.title
           : unit.title || domainOf(unit.url);
       label.title = unit.kind === "file" ? unit.filename : unit.url || "";
       sub.appendChild(label);
@@ -1344,14 +1588,16 @@ function makeItemBlock(item, markers) {
   return block;
 }
 
-// Lights up the "+N" chip of any block whose extra attachments are ticked.
+// Lights up the "+N" chip of any block whose EXTRA attachments are ticked
+// (the Main row's checkbox doesn't count — it mirrors the row checkbox).
 function refreshExtraChips(container) {
   container.querySelectorAll(".item-block").forEach((block) => {
     const chip = block.querySelector(".item-extra-count");
     if (!chip) return;
     const any =
-      block.querySelectorAll(".item-subrows input[type='checkbox']:checked")
-        .length > 0;
+      block.querySelectorAll(
+        ".item-subrows input[type='checkbox']:not([data-default='1']):checked",
+      ).length > 0;
     chip.classList.toggle("active", any);
   });
 }
@@ -1440,6 +1686,80 @@ async function loadMappings(fallbackMappings = []) {
 // ─── Event listeners ─────────────────────────────────────────────────
 
 function setupEventListeners() {
+  // Collapsible PDFs / Web URLs groups (persisted in chrome.storage.local)
+  document.querySelectorAll(".item-group-chevron").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const key = btn.dataset.group;
+      const group = document.getElementById(
+        key === "files" ? "group-files" : "group-urls",
+      );
+      if (!group) return;
+      const collapsed = group.classList.toggle("collapsed");
+      btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      try {
+        const { groupCollapsed } = await chrome.storage.local.get(
+          "groupCollapsed",
+        );
+        await chrome.storage.local.set({
+          groupCollapsed: { ...(groupCollapsed || {}), [key]: collapsed },
+        });
+      } catch {
+        /* non-fatal */
+      }
+    });
+  });
+
+  // Resizable groups (drag each group's handle; persisted per group)
+  document.querySelectorAll(".item-group-resize").forEach((handle) => {
+    const key = handle.dataset.group;
+    const rowsEl = groupRowsEl(key);
+    const groupEl = handle.closest(".item-group");
+    if (!rowsEl || !groupEl) return;
+    handle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      handle.classList.add("dragging");
+      // pageY (document coords), not clientY — growing the group scrolls the
+      // popup body, which must not fight the drag math.
+      const startY = e.pageY;
+      const startH = rowsEl.getBoundingClientRect().height || 200;
+      const onMove = (ev) => {
+        groupEl.classList.add("resized");
+        rowsEl.style.height = `${clampGroupHeight(
+          startH + (ev.pageY - startY),
+        )}px`;
+        // As the group grows past the visible area, scroll the popup so the
+        // handle stays under the cursor and the drag feels continuous.
+        const edge = window.innerHeight - 12;
+        if (ev.clientY > edge) window.scrollBy(0, ev.clientY - edge);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        handle.classList.remove("dragging");
+        const h = clampGroupHeight(parseFloat(rowsEl.style.height) || startH);
+        rowsEl.style.height = `${h}px`;
+        saveGroupHeight(key, h);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp, { once: true });
+    });
+    handle.addEventListener("dblclick", async () => {
+      groupEl.classList.remove("resized");
+      rowsEl.style.height = "";
+      try {
+        const { groupHeights } = await chrome.storage.local.get("groupHeights");
+        if (groupHeights) {
+          const next = { ...groupHeights };
+          delete next[key];
+          await chrome.storage.local.set({ groupHeights: next });
+        }
+      } catch {
+        /* non-fatal */
+      }
+    });
+  });
+
   // Library dropdowns repopulate their matching collection select on change
   const syncLibSel = document.getElementById("library-select");
   const syncColSel = document.getElementById("collection-select");
@@ -1532,7 +1852,7 @@ function setupEventListeners() {
       const orig = btn.textContent;
       btn.disabled = true;
       btn.textContent = "Checking…";
-      const before = (await getSyncedMarkers(mappingKey)).size;
+      const before = await getSyncedMarkers(mappingKey);
       const rec = await sendMessage(
         {
           type: "n2z-reconcile-synced",
@@ -1549,15 +1869,16 @@ function setupEventListeners() {
       await previewItems(source);
       const after =
         rec?.success && rec.data && typeof rec.data === "object"
-          ? Object.keys(rec.data).length
+          ? new Map(Object.entries(rec.data))
           : before;
-      const removed = Math.max(0, before - after);
-      resultDiv.classList.remove("hidden");
-      resultDiv.className = "result success";
-      resultDiv.textContent =
-        removed > 0
-          ? `Cleared ${removed} source${removed > 1 ? "s" : ""} you removed in NotebookLM — ready to re-upload.`
-          : "All synced sources are still in the notebook.";
+      const clearedKeys = [...before.keys()].filter((k) => !after.has(k));
+      const clearedNames = clearedKeys.map((k) => {
+        const m = before.get(k);
+        return m && typeof m === "object" && (m.label || m.name)
+          ? String(m.label || m.name)
+          : k;
+      });
+      renderCheckNotebookResult(rec, clearedKeys, clearedNames);
     });
 
   document

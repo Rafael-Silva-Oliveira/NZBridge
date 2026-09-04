@@ -827,6 +827,21 @@ body.dark .btn.primary:hover:not(:disabled) {
   border: 1px solid var(--success-border);
 }
 
+/* "Check notebook" result: cleared sources as a readable bullet list */
+.check-result-head {
+  margin-bottom: 4px;
+}
+
+.result ul.check-cleared-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.result ul.check-cleared-list li {
+  margin-bottom: 4px;
+  word-break: break-word; /* long academic filenames wrap instead of overflowing */
+}
+
 .result.error {
   background: var(--error-bg);
   color: var(--error-fg);
@@ -1045,9 +1060,79 @@ body.dark .btn.primary:hover:not(:disabled) {
 }
 
 .item-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 5px 8px;
   background: var(--bg-muted);
   border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+
+.item-group-header:hover .item-group-title {
+  color: var(--text-primary);
+}
+
+.item-group-chevron {
+  border: none;
+  background: none;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.item-group-chevron:hover {
+  color: var(--text-primary);
+}
+
+/* Collapsed group: hide its rows, flip the chevron */
+.item-group.collapsed .item-rows {
+  display: none;
+}
+
+/* Per-group resize handle: drag to give that group's rows a fixed, internally
+   scrollable height; double-click to reset. Hidden while the group is
+   collapsed. */
+.item-group-resize {
+  height: 10px;
+  cursor: ns-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.item-group-resize::before {
+  content: "";
+  width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.item-group-resize:hover::before,
+.item-group-resize.dragging::before {
+  background: var(--text-muted);
+}
+
+.item-group.collapsed .item-group-resize {
+  display: none;
+}
+
+.item-group.resized .item-rows {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.item-group.collapsed .item-group-header {
+  border-bottom: none;
+}
+
+.item-group.collapsed .item-group-chevron {
+  transform: rotate(-90deg);
 }
 
 .item-group-label {
@@ -1236,16 +1321,15 @@ body.dark .btn.primary:hover:not(:disabled) {
   display: block;
 }
 
-/* Muted anchor row showing what the parent checkbox refers to */
-.item-main-info {
-  padding: 3px 8px 3px 24px;
-  font-size: 10.5px;
-  color: var(--text-muted);
+/* The MAIN attachment as an expanded checkbox row — visually anchored
+   (muted background) so it reads as "what the item-row checkbox refers to",
+   but interactive like any other attachment row. */
+.item-subrow.item-main-row {
   background: var(--bg-muted);
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.item-subrow.item-main-row .item-subrow-name {
+  color: var(--text-muted);
 }
 
 .item-subrow {

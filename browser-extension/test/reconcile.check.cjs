@@ -121,6 +121,80 @@ function marker(name, extra = {}) {
   assert.deepStrictEqual(prune, [], "truncated label → marker kept");
 }
 
+// 9. Sibling filenames (user report: main + secondary of the same paper):
+//    deleting ONE sibling must clear only its own marker, even though the
+//    survivor's label is a PREFIX of the deleted one — the old fuzzy matcher
+//    treated both as the same source, so the deleted sibling stayed ✓.
+{
+  const registry = {
+    M1: marker("Hamilton - 2024 - Overcoming resistance in small-cell lung cancer.pdf", {
+      label: "Hamilton - 2024 - Overcoming resistance in small-cell lung cancer",
+    }),
+    M2: marker("Hamilton - 2024 - Overcoming resistance in small-cell lung cancer 1.pdf", {
+      label: "Hamilton - 2024 - Overcoming resistance in small-cell lung cancer 1",
+    }),
+  };
+  // Secondary deleted, main still in the notebook (label ≈ filename minus ext).
+  const live = [{ label: "Hamilton - 2024 - Overcoming resistance in small-cell lung cancer", faviconDomain: null }];
+  assert.deepStrictEqual(
+    computePruneKeys(registry, live, 1),
+    ["M2"],
+    "deleted secondary pruned, main kept (no prefix cross-match)",
+  );
+  // Both still present → nothing pruned.
+  const liveBoth = [
+    { label: "Hamilton - 2024 - Overcoming resistance in small-cell lung cancer 1", faviconDomain: null },
+    { label: "Hamilton - 2024 - Overcoming resistance in small-cell lung cancer", faviconDomain: null },
+  ];
+  assert.deepStrictEqual(computePruneKeys(registry, liveBoth, 2), []);
+  // Main deleted, secondary alive → only the main's marker is pruned.
+  const liveOnlySecondary = [
+    { label: "Hamilton - 2024 - Overcoming resistance in small-cell lung cancer 1", faviconDomain: null },
+  ];
+  assert.deepStrictEqual(
+    computePruneKeys(registry, liveOnlySecondary, 1),
+    ["M1"],
+    "deleted main pruned; secondary kept",
+  );
+}
+
+// 10. Label-less legacy filename markers also resolve via normalized
+//     comparison (NotebookLM metadata-title naming).
+{
+  const registry = { M1: marker("Smith - 2020 - Paper.pdf") };
+  const live = [{ label: "Smith - 2020 - Paper", faviconDomain: null }];
+  assert.deepStrictEqual(
+    computePruneKeys(registry, live, 1),
+    [],
+    "filename vs metadata-title label matches normalized",
+  );
+}
+
+// 11. Mid-ingestion protection: while the notebook is busy, markers uploaded
+//     within the skip window are kept (their source may show a placeholder
+//     label), but older deletions prune normally.
+{
+  const now = Date.now();
+  const registry = {
+    M_NEW: { at: now - 10_000, name: "new.pdf", label: "new.pdf" },
+    M_OLD: { at: now - 600_000, name: "old.pdf", label: "old.pdf" },
+  };
+  // new.pdf is still ingesting — NotebookLM shows a placeholder row; old.pdf
+  // was deleted by the user.
+  const live = [{ label: "Processing…", faviconDomain: null }];
+  const prune = computePruneKeys(registry, live, 1, { skipRecentMs: 60_000 });
+  assert.deepStrictEqual(
+    prune,
+    ["M_OLD"],
+    "recent upload protected while busy; old deletion pruned",
+  );
+  // Without the busy flag the same read prunes both (old behavior).
+  assert.deepStrictEqual(
+    [...computePruneKeys(registry, live, 1)].sort(),
+    ["M_NEW", "M_OLD"],
+  );
+}
+
 // ─── helpers (regression: moved from background.js, must behave the same) ──
 
 assert.strictEqual(

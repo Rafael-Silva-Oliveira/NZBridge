@@ -977,27 +977,47 @@ async function forwardSyncImpl(
         }
       }
 
-      // Match file (PDF) items by EXACT filename: NotebookLM labels an uploaded
-      // PDF with its filename (e.g. "Heeke et al. - 2024 - …su.pdf"), which is
-      // exactly `fileData.filename` (stored as the marker's `name`). Fall back
-      // to positional binding only if the exact match misses.
-      const fileLeftovers = remaining.filter((s) => !s.faviconDomain);
+      // Match file (PDF) items by filename against the live source labels.
+      // NotebookLM may label a PDF from its metadata title (≈ filename minus
+      // ".pdf"), so match exact, then normalized, then an explicit "…"
+      // truncation. Each live source binds at most ONE marker, and a marker
+      // with no confident match stays unbound — a positional guess used to
+      // swap labels between same-paper siblings (NotebookLM sorts sources
+      // alphabetically, not in upload order), which made reconcile keep
+      // deleted siblings alive.
+      const fileLeftovers = remaining
+        .filter((s) => !s.faviconDomain)
+        .map((s) => ({
+          label: String(s.label || "").trim(),
+          norm: normalizeSourceName(s.label),
+        }));
       for (const r of allResults) {
         if (!r.success || r.type !== "file" || !r.__unitKey) continue;
         const marker = syncedHashes[r.__unitKey];
         if (!marker || typeof marker !== "object") continue;
         const want = String(marker.name || "").trim();
-        let hitIdx = want
-          ? fileLeftovers.findIndex(
-              (s) => String(s.label || "").trim() === want,
-            )
-          : -1;
-        if (hitIdx === -1) hitIdx = 0; // positional fallback (upload order)
-        const src = fileLeftovers[hitIdx];
-        if (src && src.label) {
-          marker.label = src.label;
-          fileLeftovers.splice(hitIdx, 1);
+        if (!want || fileLeftovers.length === 0) continue;
+        const wantNorm = normalizeSourceName(want);
+        let hitIdx = fileLeftovers.findIndex((s) => s.label === want);
+        if (hitIdx === -1 && wantNorm) {
+          hitIdx = fileLeftovers.findIndex(
+            (s) => s.norm && s.norm === wantNorm,
+          );
         }
+        if (hitIdx === -1 && wantNorm) {
+          // Real truncation only — a prefix match on full labels would swap
+          // "paper 1.pdf" and "paper.pdf".
+          hitIdx = fileLeftovers.findIndex(
+            (s) =>
+              s.norm &&
+              s.label.includes("…") &&
+              wantNorm.length >= 6 &&
+              (s.norm.startsWith(wantNorm) || wantNorm.startsWith(s.norm)),
+          );
+        }
+        if (hitIdx === -1) continue; // no confident match — leave unbound
+        marker.label = fileLeftovers[hitIdx].label;
+        fileLeftovers.splice(hitIdx, 1);
       }
     }
   } catch (e) {
@@ -3872,8 +3892,17 @@ async function getSourceNames(tabId) {
         const rows = [
           ...document.querySelectorAll(".single-source-container"),
         ].filter((el) => !inDialog(el));
-        // Panel not open / not rendered → signal "unreadable", don't report 0.
-        if (rows.length === 0) return null;
+        if (rows.length === 0) {
+          // Zero rows can mean "notebook emptied" or "panel not readable".
+          // The empty-state text is only rendered when the Sources panel is
+          // open with genuinely zero sources — deleting ALL sources must be
+          // detectable, so report a confirmed empty list instead of null.
+          // (No match → null: never prune blind on a DOM misread.)
+          const emptyState = /saved sources will appear here/i.test(
+            document.body?.textContent || "",
+          );
+          return emptyState ? [] : null;
+        }
 
         const decodeFaviconDomain = (src) => {
           if (!src) return null;
@@ -3934,48 +3963,75 @@ async function getSourceNames(tabId) {
  * applied THERE first and the local cache is mirrored from it. A local-only
  * prune would be resurrected by the mapping on the next sync's merge.
  *
- * Safety rails (prune nothing when hit):
- *   - NotebookLM is still ingesting (busy spinner up)
+ * Safety rails:
+ *   - NotebookLM still ingesting after a settle-wait → pruning proceeds, but
+ *     markers uploaded in the last `skipRecentMs` are protected (a just-
+ *     uploaded source may still show a placeholder label and would look
+ *     deleted); older deletions are fully readable and prune normally
  *   - the Sources panel can't be read (getSourceNames → null)
  *   - the live read is partial (rows < the panel's "N sources" count — the
  *     list virtualizes, so off-screen sources would look deleted)
  *
- * Returns the array of still-valid item keys.
+ * Returns { keys, note } — still-valid item keys plus the rail that blocked
+ * pruning ("unreadable" | "partial" | "mapping"), or null when the result
+ * is a true answer. The popup surfaces the note so a blocked check is never
+ * mistaken for "nothing was deleted".
  */
 async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
   const syncKey = `sync_${collectionId}_${notebookId}`;
   const state = await chrome.storage.local.get(syncKey);
   const registry = state[syncKey] || {};
   const keys = Object.keys(registry);
-  if (keys.length === 0) return [];
+  if (keys.length === 0) return { keys: [], note: null };
 
-  // Don't reconcile while NotebookLM is still ingesting sources — the source
-  // list/count is mid-update and would falsely look like deletions.
-  const liveState = await getSourceState(tabId);
-  if (liveState && liveState.busy) {
-    console.log(
-      `[n2z] Reconcile ${syncKey}: notebook busy ingesting — keeping all ${keys.length} markers.`,
-    );
-    return keys;
+  // Give the panel a few seconds to settle first — users often check right
+  // after deleting/uploading, and a mid-ingestion spinner makes the count
+  // unstable.
+  let liveState = await getSourceState(tabId);
+  for (let i = 0; i < 8 && liveState && liveState.busy; i++) {
+    await sleep(1000);
+    liveState = await getSourceState(tabId);
   }
+  const stillBusy = !!(liveState && liveState.busy);
 
   const liveSources = await getSourceNames(tabId); // [{label, faviconDomain}] | null
   if (liveSources == null) {
     console.log(
       `[n2z] Reconcile ${syncKey}: Sources panel not readable — keeping all ${keys.length} markers.`,
     );
-    return keys; // panel not open / unreadable — never prune blind
+    return { keys, note: "unreadable" }; // panel not open / unreadable — never prune blind
   }
 
   // Authoritative source count (prefers NotebookLM's "N sources" text).
+  // An empty-but-open panel (getSourceNames → []) is positive evidence of
+  // zero sources — don't let a missing/stale count text block the prune.
   const countState =
     liveState && liveState.count != null
       ? liveState
       : await getSourceState(tabId);
   const liveCount =
-    countState && countState.count != null ? countState.count : null;
+    liveSources.length === 0
+      ? 0
+      : countState && countState.count != null
+        ? countState.count
+        : null;
 
-  const toPrune = computePruneKeys(registry, liveSources, liveCount);
+  // Partial read: the panel reports more sources than are in the DOM
+  // (virtualization / mid-update) — off-screen sources would look deleted.
+  if (liveCount != null && liveCount > liveSources.length) {
+    console.log(
+      `[n2z] Reconcile ${syncKey}: partial read (count=${liveCount}, rows=${liveSources.length}) — keeping all markers.`,
+    );
+    return { keys, note: "partial" };
+  }
+
+  // Still ingesting after the wait: a just-uploaded source may show a
+  // placeholder label, so protect markers uploaded in the last minute — but
+  // older deletions are fully readable and must NOT be blocked.
+  const skipRecentMs = stillBusy ? 60_000 : 0;
+  const toPrune = computePruneKeys(registry, liveSources, liveCount, {
+    skipRecentMs,
+  });
 
   // Diagnostic: surface the exact comparison so mismatches are debuggable.
   const nameBearingKeys = keys.filter((k) => {
@@ -3989,7 +4045,7 @@ async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
       `  live:   ${liveSources.map((s) => JSON.stringify(s.label || s.faviconDomain)).join(", ")}`,
   );
 
-  if (toPrune.length === 0) return keys; // nothing removed (or a rail hit)
+  if (toPrune.length === 0) return { keys, note: null }; // nothing removed
 
   // The Zotero mapping is the durable source of truth (the popup's ✓ marks
   // and the next sync's merge both read it), so prune THERE first and mirror
@@ -4011,7 +4067,7 @@ async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
     // hashes for this notebook.
   } catch (e) {
     console.warn(`[n2z] Reconcile ${syncKey}: mapping update failed — keeping all markers.`, e);
-    return keys;
+    return { keys, note: "mapping" };
   }
 
   for (const k of toPrune) delete registry[k];
@@ -4020,7 +4076,7 @@ async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
   console.log(
     `[n2z] Reconcile pruned ${toPrune.length} removed source(s); ${Object.keys(registry).length} remain.`,
   );
-  return Object.keys(registry);
+  return { keys: Object.keys(registry), note: null };
 }
 
 /**
@@ -4214,7 +4270,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "n2z-reconcile-synced": {
         // Explicit removal check (triggered by the "Check notebook" button).
         // Prunes markers for sources removed in NotebookLM, then returns the
-        // remaining synced markers from the durable Zotero mapping.
+        // remaining synced markers from the durable Zotero mapping, plus the
+        // rail that blocked pruning (note) so the popup can say WHY nothing
+        // was cleared instead of implying "nothing was deleted".
         const { tab: recTab } = await resolveNotebookLMTab();
         const readMappingHashes = async () => {
           const m = await zoteroRequest("/n2z/mapping", {
@@ -4229,14 +4287,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Never probe the tab while a sync is uploading to it — a concurrent
         // scripting read can disrupt the CDP file-chooser handshake.
         if (!recTab || activeSyncs.has(recTab.id)) {
-          return { success: true, data: await readMappingHashes() };
+          return { success: true, data: await readMappingHashes(), note: null };
         }
-        await reconcileSyncedKeys(
+        const rec = await reconcileSyncedKeys(
           message.collectionId,
           message.notebookId,
           recTab.id,
         );
-        return { success: true, data: await readMappingHashes() };
+        return {
+          success: true,
+          data: await readMappingHashes(),
+          note: rec?.note || null,
+        };
       }
 
       case "n2z-clear-sync-state": {

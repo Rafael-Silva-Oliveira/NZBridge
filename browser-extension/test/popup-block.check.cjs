@@ -89,7 +89,7 @@ sandbox.__export = (name, fn) => (exportedFns[name] = fn);
 const src = fs.readFileSync(SRC, "utf8");
 vm.runInNewContext(
   src +
-    "\n;__export('makeItemBlock', makeItemBlock);__export('resolveUploadedUnits', resolveUploadedUnits);",
+    "\n;__export('makeItemBlock', makeItemBlock);__export('resolveUploadedUnits', resolveUploadedUnits);__export('preservedChecked', preservedChecked);",
   sandbox,
   {
     filename: "popup.js",
@@ -97,11 +97,17 @@ vm.runInNewContext(
 );
 const makeItemBlock = exportedFns.makeItemBlock;
 const resolveUploadedUnits = exportedFns.resolveUploadedUnits;
+const preservedChecked = exportedFns.preservedChecked;
 assert.strictEqual(typeof makeItemBlock, "function", "makeItemBlock not exported");
 assert.strictEqual(
   typeof resolveUploadedUnits,
   "function",
   "resolveUploadedUnits not exported",
+);
+assert.strictEqual(
+  typeof preservedChecked,
+  "function",
+  "preservedChecked not exported",
 );
 
 // The group select-all checkboxes live inside #item-list too — the per-unit
@@ -142,20 +148,22 @@ const item = {
 
 const block = makeItemBlock(item, new Map());
 
-// Structure: block > row(div) > [main label (checkbox = default unit), toggle]
+// Structure: block > row(div) > [main label + toggle]. For multi-attachment
+// items the ITEM ROW carries no checkbox — the main attachment lives in the
+// expanded list as a row of its own (the issue's request: every attachment
+// shown like the non-main ones, main pre-ticked).
 const row = block.children[0];
 assert.ok(row.className.includes("item-row"));
 assert.ok(row.className.includes("has-attachments"));
 
 const main = row.children[0];
 assert.ok(main.className.includes("item-row-main"));
+// The main attachment has TWO synced checkboxes: the item-row one (visible
+// when collapsed) and the expanded "Main ·" row. Both carry data-default.
+assert.strictEqual(main.children[0].type, "checkbox");
 assert.strictEqual(main.children[0].dataset.default, "1");
 assert.strictEqual(main.children[0].dataset.unitId, "att-5");
-// Main checkbox defaults ON (user-requested: upload-the-main is the common
-// case; untick the row to upload only extras).
 assert.strictEqual(main.children[0].checked, true, "main checkbox defaults ON");
-// Main-row hover must reveal WHICH FILE is the main attachment — the row
-// label shows the item title, which is not enough to tell attachments apart.
 assert.ok(
   main.children[1].title.includes("Main attachment: main.pdf"),
   "main row tooltip names the main attachment file",
@@ -177,23 +185,31 @@ assert.ok(toggle.classList.contains("open"), "toggle reflects open state");
 click(toggle);
 assert.ok(!subrows.classList.contains("open"), "second click collapses again");
 
-// Expansion content: Main info row + one selectable row per extra
+// Expansion content: the MAIN attachment as a real checkbox row + extras
 click(toggle);
-assert.ok(subrows.children[0].className.includes("item-main-info"));
-assert.ok(subrows.children[0].textContent.includes("main.pdf"));
+const mainRow = subrows.children[0];
+assert.ok(mainRow.className.includes("item-main-row"), "main is a row now");
+assert.strictEqual(mainRow.children[0].dataset.default, "1");
+assert.strictEqual(mainRow.children[0].dataset.unitId, "att-5");
+assert.strictEqual(mainRow.children[0].dataset.itemKey, "ITEMAA1");
+// Main checkbox defaults ON (user-requested) — and it's DE-SELECTABLE here,
+// which was the whole point: untick the main without touching anything else.
+assert.strictEqual(mainRow.children[0].checked, true, "main row defaults ON");
+assert.ok(mainRow.children[1].textContent.includes("Main · main.pdf"));
 assert.ok(
-  subrows.children[0].title.includes("Main attachment: main.pdf"),
-  "Main info row tooltip names the full file",
+  mainRow.children[1].title.includes("Main attachment: main.pdf"),
+  "Main row tooltip names the full file",
 );
 assert.ok(
-  subrows.children[0].title.includes("untick the row checkbox"),
-  "Main info row tooltip explains how to skip the main attachment",
+  mainRow.children[1].title.includes("untick this"),
+  "Main row tooltip explains how to skip the main attachment",
 );
 const sub = subrows.children[1];
 assert.ok(sub.className.includes("item-subrow"));
 assert.strictEqual(sub.children[0].dataset.unitId, "att-6");
 assert.strictEqual(sub.children[0].dataset.itemKey, "ITEMAA1");
 assert.strictEqual(sub.children[0].checked, false, "extras default OFF");
+assert.ok(!sub.dataset || !sub.children[0].dataset.default, "extra is not a main");
 
 // ─── Single-unit items stay plain (no toggle at all) ──────────────────
 const single = makeItemBlock(
@@ -238,22 +254,23 @@ assert.strictEqual(singleRow.children.length, 1, "no toggle for single-unit item
   assert.ok(resolved.has(docxUnit), "legacy marker attributed to the DOCX unit");
   assert.ok(!resolved.has(mainUnit), "main PDF stays selectable");
 
-  // Render: ✓ on the DOCX sub-row, checkbox on the main row.
+  // Render: ✓ on the DOCX sub-row; item-row checkbox remains (main not
+  // uploaded), pre-ticked, synced with the expanded Main row.
   const b2 = makeItemBlock(multi, markers);
   const r2 = b2.children[0];
   assert.strictEqual(
     r2.children[0].children[0].type,
     "checkbox",
-    "main row shows a checkbox, not a ✓, for a legacy extra-file marker",
+    "item-row checkbox present while the main is not uploaded",
   );
   assert.strictEqual(
     r2.children[0].children[0].checked,
     true,
     "main checkbox defaults ON when the main is not uploaded",
   );
-  const subs = b2.children[1];
-  const docxMarkedRow = subs.children.find(
-    (s) => s.children[1] && String(s.children[1].textContent).includes("Supplement"),
+  const subs2 = b2.children[1];
+  const docxMarkedRow = subs2.children.find(
+    (s) => s.children[1] && /supplement/i.test(String(s.children[1].textContent)),
   );
   assert.ok(docxMarkedRow, "DOCX sub-row found");
   assert.ok(
@@ -281,12 +298,52 @@ assert.strictEqual(singleRow.children.length, 1, "no toggle for single-unit item
   assert.strictEqual(
     mainLabel.children[0].className,
     "item-check",
-    "main row shows ✓ when its own marker exists",
+    "item row shows ✓ when its own marker exists",
   );
   assert.ok(
     mainLabel.title.includes("main.pdf"),
     "✓ tooltip names the uploaded source",
   );
+  // The expanded Main row shows ✓ too (it's the same unit).
+  const mainRow3 = b3.children[1].children[0];
+  assert.strictEqual(
+    mainRow3.className.includes("uploaded"),
+    true,
+    "expanded Main row is marked uploaded",
+  );
+  assert.ok(
+    mainRow3.title.includes("main.pdf"),
+    "expanded Main ✓ tooltip names the uploaded source",
+  );
 }
 
 console.log("popup-block.check: toggle, structure, selection scoping, legacy markers OK");
+
+// ─── Selection preservation across re-renders (user report) ───────────
+// After a sync or "Check notebook" the popup re-renders; the user's tick
+// state must be restored exactly, not reset to the all-mains default.
+{
+  sandbox.window._userSelection = null;
+  assert.strictEqual(
+    preservedChecked(item, item.units[0]),
+    true,
+    "no user interaction yet → main defaults ON",
+  );
+  assert.strictEqual(
+    preservedChecked(item, item.units[1]),
+    false,
+    "no user interaction yet → extra defaults OFF",
+  );
+
+  sandbox.window._userSelection = new Set(["ITEMAA1::att-6"]); // user ticked ONLY the extra
+  assert.strictEqual(
+    preservedChecked(item, item.units[0]),
+    false,
+    "preserved selection: main stays unticked",
+  );
+  assert.strictEqual(
+    preservedChecked(item, item.units[1]),
+    true,
+    "preserved selection: extra stays ticked",
+  );
+}

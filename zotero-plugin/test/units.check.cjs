@@ -237,6 +237,45 @@ async function main() {
     console.log("T6 ok — missing best file falls back to existing file");
   }
 
+  // ─── T7: file attachment with a URL field → no colliding URL unit ──
+  // The PDF's own download URL must NOT become a second unit sharing the
+  // file unit's att-<id> key (two sources, one identity — selection and
+  // marker keys would be ambiguous). Linked-URL attachments (no file) keep
+  // their att-<id> URL units.
+  {
+    const a1 = att({
+      id: 701,
+      path: "C:/lib/paper.pdf",
+      url: "https://www.mdpi.com/1420-3049/30/8/1731/pdf",
+    });
+    const a2 = att({
+      id: 702,
+      title: "Online",
+      isFile: false,
+      url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC1234/",
+    });
+    const res = await run([
+      item({
+        id: 71,
+        key: "ITEMAA7",
+        title: "Paper Seven",
+        atts: [a1, a2],
+        best: a1,
+        fields: { url: "https://www.mdpi.com/1420-3049/30/8/1731/pdf" },
+      }),
+    ]);
+    const it = res[0];
+    const ids = it.units.map((u) => u.unitId);
+    assert.strictEqual(ids.length, new Set(ids).size, "unitIds must be unique");
+    assert.ok(
+      !it.units.some((u) => u.unitId === "att-701" && u.kind === "url"),
+      "no URL unit for a file attachment",
+    );
+    assert.ok(ids.includes("att-702"), "linked-URL attachment keeps its unit");
+    assert.strictEqual(it.units.length, 2); // main PDF + link unit
+    console.log("T7 ok — file attachment's own URL does not collide");
+  }
+
   console.log("\nAll unit-enumeration checks passed.");
 }
 

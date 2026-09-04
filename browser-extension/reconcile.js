@@ -93,9 +93,12 @@ function nameStillPresent(stored, liveNormalized) {
  * @param {Array}  liveSources [{label, faviconDomain}]
  * @param {number|null} liveCount authoritative source count from the panel's
  *                        "N sources" text, or null when unavailable
+ * @param {Object} [options]
+ * @param {number} [options.skipRecentMs] protect markers uploaded within this
+ *                        window (mid-ingestion reads can't see their sources)
  * @returns {string[]} keys to prune (empty = keep everything)
  */
-function computePruneKeys(registry, liveSources, liveCount) {
+function computePruneKeys(registry, liveSources, liveCount, { skipRecentMs = 0 } = {}) {
   const keys = Object.keys(registry);
   const nameBearing = keys.filter((k) => {
     const e = registry[k];
@@ -115,26 +118,72 @@ function computePruneKeys(registry, liveSources, liveCount) {
     return [];
   }
 
-  const liveLabels = new Set(
-    liveSources.map((s) => String(s.label || "").trim()).filter(Boolean),
-  );
-  const liveDomains = new Set(
-    liveSources.map((s) => normalizeSourceUrl(s.faviconDomain)).filter(Boolean),
-  );
-  const liveNormalized = liveSources
-    .map((s) => normalizeSourceName(s.label))
-    .filter(Boolean);
-
-  const stillPresent = (e) => {
-    const dom = normalizeSourceUrl(e.faviconDomain || e.url);
-    if (dom && liveDomains.has(dom)) return true;
-    if (e.label && liveLabels.has(String(e.label).trim())) return true;
-    if (e.name && liveLabels.has(String(e.name).trim())) return true;
-    if (e.name) return nameStillPresent(e.name, liveNormalized);
-    return false;
+  const live = liveSources.map((s) => ({
+    label: String(s.label || "").trim(),
+    domain: normalizeSourceUrl(s.faviconDomain),
+    norm: normalizeSourceName(s.label),
+    used: false,
+  }));
+  // A live source can satisfy at most ONE marker, so two near-identical
+  // siblings ("paper.pdf" + "paper 1.pdf") can't both hide behind the
+  // surviving source when the other was deleted.
+  const take = (pred) => {
+    const hit = live.find((s) => !s.used && pred(s));
+    if (hit) hit.used = true;
+    return !!hit;
   };
 
-  return nameBearing.filter((k) => !stillPresent(registry[k]));
+  const present = new Set();
+  // Mid-ingestion protection: markers uploaded within skipRecentMs stay put —
+  // their source may be showing a placeholder label right now.
+  const recentCutoff = skipRecentMs ? Date.now() - skipRecentMs : 0;
+  for (const k of nameBearing) {
+    const e = registry[k];
+    if (recentCutoff && e && typeof e === "object" && e.at && e.at > recentCutoff) {
+      present.add(k);
+    }
+  }
+  // Phase 1 — exact identities, strongest first:
+  //   1. favicon domain / stored URL   (URL sources)
+  //   2. exact captured label          (bound at sync time)
+  //   3. uploaded filename == live label
+  //   4. normalized filename == normalized label — NotebookLM often labels
+  //      a PDF from its metadata title (≈ filename minus ".pdf")
+  for (const k of nameBearing) {
+    const e = registry[k];
+    const dom = normalizeSourceUrl(e.faviconDomain || e.url);
+    if (dom && take((s) => s.domain === dom)) {
+      present.add(k);
+      continue;
+    }
+    if (e.label && take((s) => s.label === String(e.label).trim())) {
+      present.add(k);
+      continue;
+    }
+    if (e.name) {
+      const nm = String(e.name).trim();
+      if (take((s) => s.label === nm)) {
+        present.add(k);
+        continue;
+      }
+      const nn = normalizeSourceName(nm);
+      if (nn && take((s) => s.norm === nn)) present.add(k);
+    }
+  }
+  // Phase 2 — fuzzy ONLY for legacy markers with no captured label: the
+  // prefix rules can't tell "paper 1.pdf" from "paper.pdf", so a labeled
+  // marker must never lean on them (a deleted sibling would look alive).
+  for (const k of nameBearing) {
+    if (present.has(k)) continue;
+    const e = registry[k];
+    if (!e.name || e.label) continue;
+    const nn = normalizeSourceName(e.name);
+    if (nn && take((s) => s.norm && nameStillPresent(e.name, [s.norm]))) {
+      present.add(k);
+    }
+  }
+
+  return nameBearing.filter((k) => !present.has(k));
 }
 
 // Node (test) export; ignored in the service worker.

@@ -365,10 +365,18 @@ interface UrlCandidate {
  * Collection order mirrors the historical getItemUrl order so the
  * best-ranked pick is identical to previous versions; a metadata URL that
  * duplicates an attachment URL adopts that attachment's identity.
+ *
+ * `fileAttachmentIds` lists attachments ALREADY offered as file units: their
+ * own URLs are skipped (the file unit represents that attachment — a second
+ * URL unit would re-use the same att-<id> key and collide with it), and
+ * metadata URLs never adopt a file attachment's identity for the same
+ * reason. Linked-URL attachments without a local file keep their att-<id>
+ * URL units.
  */
 function getItemUrlCandidates(
   item: Zotero.Item,
   atts: Zotero.Item[],
+  fileAttachmentIds: Set<number>,
 ): UrlCandidate[] {
   const seen = new Set<string>();
   const candidates: UrlCandidate[] = [];
@@ -395,8 +403,11 @@ function getItemUrlCandidates(
     /* ignore */
   }
 
-  // Attachment URLs
+  // Attachment URLs — but not for attachments already offered as file
+  // units: the file unit IS that attachment, and a URL unit sharing its
+  // att-<id> key would collide with it (two sources, one identity).
   for (const att of atts) {
+    if (fileAttachmentIds.has(att.id)) continue;
     try {
       const attUrl = att.getField("url") as string;
       if (attUrl) push(attUrl, att.id, (att.getField("title") as string) || "");
@@ -465,12 +476,16 @@ function getItemUrlCandidates(
   candidates.sort((a, b) => rank(a.url) - rank(b.url));
 
   // A metadata URL identical to an attachment URL adopts the attachment's
-  // identity (stable att-<id> unit key + attachment title).
+  // identity (stable att-<id> unit key + attachment title) — but never a
+  // file attachment's identity: that attachment is already a file unit.
   for (const c of candidates) {
     if (c.attachmentId !== 0) continue;
     const key = norm(c.url);
     const att = atts.find(
-      (a) => a.getField("url") && norm(a.getField("url") as string) === key,
+      (a) =>
+        !fileAttachmentIds.has(a.id) &&
+        a.getField("url") &&
+        norm(a.getField("url") as string) === key,
     );
     if (att) {
       c.attachmentId = att.id;
@@ -577,7 +592,11 @@ async function exportSingleItem(
     });
   }
 
-  const candidates = getItemUrlCandidates(item, atts);
+  const candidates = getItemUrlCandidates(
+    item,
+    atts,
+    new Set(fileUnits.map((u) => u.attachmentId)),
+  );
 
   // File item: default = Zotero's best attachment (the one opened on click)
   // when it is among the exportable file units; else the first file unit.
