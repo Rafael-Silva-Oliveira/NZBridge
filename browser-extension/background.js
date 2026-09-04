@@ -6,6 +6,9 @@
  * - Backward sync: NotebookLM notes → Zotero collections (via DOM scraping)
  */
 
+// Pure prune/match helpers (shared with test/reconcile.check.cjs).
+importScripts("reconcile.js");
+
 const ZOTERO_BASE = "http://localhost:23119";
 
 // Prevents overlapping syncs on the same NotebookLM tab from colliding on
@@ -591,9 +594,15 @@ async function forwardSyncImpl(
     /* mapping fetch is best-effort; fall back to local cache */
   }
 
-  // Selection: canonical unit keys. `selectedUnits` (new popup) wins; a
-  // legacy `selectedItemKeys` list is interpreted as default-unit keys so an
-  // old caller never gets surprise extra attachments. null = all defaults.
+  // Selection: EXPLICIT unit keys ("itemKey::unitId") from the popup, pinning
+  // the exact attachment the user ticked at render time. The background
+  // re-fetches /n2z/list HERE, and Zotero's best attachment can settle
+  // differently in between for freshly added items — the old bare-itemKey
+  // form meant "whatever is default NOW", which could upload a different
+  // file than the one the UI showed as Main. A legacy `selectedItemKeys`
+  // list (bare item keys, old callers) is still honored and maps to the
+  // CURRENT default unit only, so old callers never get surprise extras.
+  // null selection = all defaults.
   const selectedUnitSet = selectedUnits
     ? new Set(selectedUnits)
     : selectedItemKeys
@@ -608,8 +617,18 @@ async function forwardSyncImpl(
     for (const unit of ensureUnits(item)) {
       const key = unitKey(item, unit);
       if (syncedHashes[key]) continue;
-      if (selectedUnitSet && !selectedUnitSet.has(key)) continue;
+      if (selectedUnitSet) {
+        const explicit = item.itemKey + "::" + unit.unitId;
+        const selected =
+          selectedUnitSet.has(explicit) ||
+          (unit.isDefault && selectedUnitSet.has(item.itemKey));
+        if (!selected) continue;
+      }
       pending.push({ item, unit, key });
+      console.log(
+        `[n2z] queued "${unit.kind === "file" ? unit.filename || unit.title : unit.url || unit.title}" ` +
+          `(attachment ${unit.attachmentId}) for item ${item.itemKey} "${item.title}"`,
+      );
     }
   }
 
@@ -3895,89 +3914,33 @@ async function getSourceNames(tabId) {
   }
 }
 
-// Normalizes a URL for exact comparison between a Zotero item's URL and the
-// domain= value NotebookLM encodes in a source's favicon. Drops the scheme,
-// "www.", any trailing slash, and lowercases — so http/https and www variants
-// of the same source URL compare equal.
-function normalizeSourceUrl(u) {
-  return String(u || "")
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, "")
-    .replace(/^www\./, "")
-    .replace(/\/+$/, "");
-}
-
-// Normalizes a source label / filename for fuzzy comparison: lowercase,
-// strip a trailing extension, collapse non-alphanumerics. Lets a stored
-// upload name ("Qi et al. - 2022 - Prognostic.pdf") match the label
-// NotebookLM renders for the same source even with minor formatting drift.
-function normalizeSourceName(s) {
-  return String(s || "")
-    .toLowerCase()
-    .replace(/\.(pdf|html?|docx?|txt|md)$/i, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-// Returns true if `stored` (an upload-time name) appears among the live
-// NotebookLM source labels. NotebookLM truncates long labels in the DOM
-// (e.g. "Qi et al. - 2022 - Prognostic Implications of Mo…"), so exact
-// equality rarely holds for PDFs. Matching strategy, most to least strict:
-//   1. normalized equality
-//   2. either string is a prefix of the other (handles end-truncation)
-//   3. one string fully contains the other (handles mid-truncation / icons)
-//   4. strong leading-token overlap (handles "…" mid-cut where tails differ)
-function nameStillPresent(stored, liveNormalized) {
-  const n = normalizeSourceName(stored);
-  if (!n) return false;
-  const nTokens = n.split(" ").filter(Boolean);
-
-  for (const live of liveNormalized) {
-    if (!live) continue;
-    if (live === n) return true;
-
-    const shorter = n.length <= live.length ? n : live;
-    const longer = n.length <= live.length ? live : n;
-    if (
-      shorter.length >= 6 &&
-      (longer.startsWith(shorter) || longer.includes(shorter))
-    ) {
-      return true;
-    }
-
-    // Leading-token overlap: NotebookLM may cut mid-word, so compare the first
-    // several whitespace tokens. Strong overlap on the prefix is a confident
-    // match for academic filenames ("Author - Year - Title…").
-    const liveTokens = live.split(" ").filter(Boolean);
-    const cmp = Math.min(nTokens.length, liveTokens.length, 6);
-    if (cmp >= 3) {
-      let same = 0;
-      for (let i = 0; i < cmp; i++) if (nTokens[i] === liveTokens[i]) same++;
-      if (same >= 3 && same === cmp) return true;
-    }
-  }
-  return false;
-}
+// ─── Reconcile ("Check notebook") ────────────────────────────────────
+// Identity matching + the prune decision live in reconcile.js
+// (importScripts'd above) so they're unit-testable; see computePruneKeys.
 
 /**
  * Reconciles the saved upload registry for (collection, notebook) against the
  * notebook's live sources, pruning markers for sources that were removed in
  * NotebookLM so those items can be re-uploaded.
  *
- * Name-driven: a marker is kept only if its stored source name is still found
- * among the notebook's live source labels. Removing a source clears its marker
- * (re-uploadable); a rename also clears it, and re-syncing simply re-adds it.
+ * Identity-driven (see computePruneKeys in reconcile.js): a name-bearing
+ * marker is pruned when NONE of its identifiers (favicon domain / captured
+ * label / uploaded filename) is still found among the live sources. Extra
+ * unrelated sources in the notebook (added manually or from other
+ * collections) do NOT block pruning — the old count-shortfall heuristic did,
+ * which left deleted sources permanently marked as uploaded.
  *
- * Safety rails to avoid wrongly clearing valid markers:
- *   - If the live panel can't be read (null), nothing is pruned.
- *   - Legacy markers (stored as a bare timestamp, no name) can't be name-matched,
- *     so they're kept — they predate name capture.
- *   - If EVERY marker would be pruned but the notebook still has sources, we
- *     assume a transient/misread panel and prune nothing (prevents a bad read
- *     from wiping the whole registry).
+ * Writes: the durable Zotero mapping is the source of truth, so the prune is
+ * applied THERE first and the local cache is mirrored from it. A local-only
+ * prune would be resurrected by the mapping on the next sync's merge.
  *
- * Returns the (possibly pruned) array of still-valid item keys.
+ * Safety rails (prune nothing when hit):
+ *   - NotebookLM is still ingesting (busy spinner up)
+ *   - the Sources panel can't be read (getSourceNames → null)
+ *   - the live read is partial (rows < the panel's "N sources" count — the
+ *     list virtualizes, so off-screen sources would look deleted)
+ *
+ * Returns the array of still-valid item keys.
  */
 async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
   const syncKey = `sync_${collectionId}_${notebookId}`;
@@ -4004,78 +3967,35 @@ async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
     return keys; // panel not open / unreadable — never prune blind
   }
 
-  // Build live lookup sets for exact matching.
-  const liveLabels = new Set(
-    liveSources.map((s) => String(s.label || "").trim()).filter(Boolean),
-  );
-  const liveDomains = new Set(
-    liveSources.map((s) => normalizeSourceUrl(s.faviconDomain)).filter(Boolean),
-  );
-  const liveNormalized = liveSources
-    .map((s) => normalizeSourceName(s.label))
-    .filter(Boolean);
-
-  const nameBearingKeys = keys.filter((k) => {
-    const e = registry[k];
-    return (
-      e &&
-      typeof e === "object" &&
-      (e.label || e.name || e.url || e.faviconDomain)
-    );
-  });
-
-  // A marker's source is "present" if ANY of its identifiers match a live
-  // source, checked strongest first:
-  //   1. favicon domain / stored URL  → exact, stable id for URL sources
-  //   2. exact label                  → exact untruncated name captured at sync
-  //   3. exact `name` vs live label   → PDF filename == NotebookLM's PDF label,
-  //      which recovers markers written before `label` capture existed
-  //   4. fuzzy name                   → last-resort for odd legacy markers
-  const stillPresent = (e) => {
-    const dom = normalizeSourceUrl(e.faviconDomain || e.url);
-    if (dom && liveDomains.has(dom)) return true;
-    if (e.label && liveLabels.has(String(e.label).trim())) return true;
-    if (e.name && liveLabels.has(String(e.name).trim())) return true;
-    if (e.name) return nameStillPresent(e.name, liveNormalized);
-    return false;
-  };
-  const nameAbsent = nameBearingKeys.filter((k) => !stillPresent(registry[k]));
-
   // Authoritative source count (prefers NotebookLM's "N sources" text).
   const countState =
     liveState && liveState.count != null
       ? liveState
       : await getSourceState(tabId);
   const liveCount =
-    countState && countState.count != null
-      ? countState.count
-      : liveSources.length;
+    countState && countState.count != null ? countState.count : null;
 
-  // POSITIVE-SIGNAL pruning: only remove markers when the notebook genuinely
-  // has FEWER sources than we have markers — i.e. something was really deleted.
-  // The number we may prune is exactly that shortfall. A mere name-match miss
-  // (panel not ready, label drift, ingestion lag) with no count drop prunes
-  // NOTHING, so a transient read can never destroy a valid marker.
-  const shortfall = nameBearingKeys.length - liveCount;
+  const toPrune = computePruneKeys(registry, liveSources, liveCount);
 
   // Diagnostic: surface the exact comparison so mismatches are debuggable.
+  const nameBearingKeys = keys.filter((k) => {
+    const e = registry[k];
+    return e && typeof e === "object" && (e.label || e.name || e.url || e.faviconDomain);
+  });
   console.log(
-    `[n2z] Reconcile ${syncKey}: ${nameBearingKeys.length} markers, liveCount=${liveCount} ` +
-      `(rows=${liveSources.length}), name-absent=${nameAbsent.length}, shortfall=${shortfall}\n` +
+    `[n2z] Reconcile ${syncKey}: ${nameBearingKeys.length} name-bearing markers, ` +
+      `liveCount=${liveCount} (rows=${liveSources.length}), prune=${toPrune.length}\n` +
       `  stored: ${nameBearingKeys.map((k) => JSON.stringify(registry[k].label || registry[k].url || registry[k].name)).join(", ")}\n` +
       `  live:   ${liveSources.map((s) => JSON.stringify(s.label || s.faviconDomain)).join(", ")}`,
   );
 
-  if (shortfall <= 0 || nameAbsent.length === 0) return keys; // nothing provably removed
+  if (toPrune.length === 0) return keys; // nothing removed (or a rail hit)
 
-  // Prune the name-absent markers, but never more than the real shortfall —
-  // so a coincidental mismatch can't remove more than were actually deleted.
-  const toPrune = nameAbsent.slice(0, shortfall);
-  for (const k of toPrune) delete registry[k];
-  await chrome.storage.local.set({ [syncKey]: registry });
-
-  // Mirror the prune into the durable Zotero mapping (the source of truth the
-  // checkmarks read), so removed sources clear there too.
+  // The Zotero mapping is the durable source of truth (the popup's ✓ marks
+  // and the next sync's merge both read it), so prune THERE first and mirror
+  // the local cache from the result. A local-only prune would be resurrected
+  // by the mapping. If the mapping can't be updated (Zotero unreachable),
+  // abort — better to keep a stale marker than to fight a resurrecting one.
   try {
     const m = await zoteroRequest("/n2z/mapping", {
       action: "get",
@@ -4085,9 +4005,17 @@ async function reconcileSyncedKeys(collectionId, notebookId, tabId) {
       for (const k of toPrune) delete m.data.syncedItemHashes?.[k];
       await zoteroRequest("/n2z/mapping", { action: "set", mapping: m.data });
     }
-  } catch {
-    /* best-effort; local cache already pruned */
+    // Mapping bound to a DIFFERENT notebook: the local registry (keyed by
+    // collection+notebook) is authoritative for this notebook — local prune
+    // alone is safe because the next sync ignores a mismatched mapping's
+    // hashes for this notebook.
+  } catch (e) {
+    console.warn(`[n2z] Reconcile ${syncKey}: mapping update failed — keeping all markers.`, e);
+    return keys;
   }
+
+  for (const k of toPrune) delete registry[k];
+  await chrome.storage.local.set({ [syncKey]: registry });
 
   console.log(
     `[n2z] Reconcile pruned ${toPrune.length} removed source(s); ${Object.keys(registry).length} remain.`,
@@ -4153,9 +4081,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return getMappings();
 
       case "n2z-get-synced-items": {
-        // Durable source of truth for "already uploaded": the per-item record
+        // Durable source of truth for "already uploaded": the per-unit record
         // stored in the Zotero mapping (mapping.syncedItemHashes), keyed by
-        // Zotero itemKey. Survives popup reopen; never touched by DOM reads.
+        // Zotero itemKey (default unit) or "itemKey::unitId" (extras).
+        // Survives popup reopen; never touched by DOM reads. Returns the
+        // marker MAP (not just keys) so the popup can show which file was
+        // actually uploaded for legacy per-item markers.
         const m = await zoteroRequest("/n2z/mapping", {
           action: "get",
           collectionId: message.collectionId,
@@ -4167,7 +4098,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const wantNb = message.notebookId || null;
         const sameNb =
           !wantNb || !m?.data?.notebookId || m.data.notebookId === wantNb;
-        return { success: true, data: sameNb ? Object.keys(hashes) : [] };
+        return { success: true, data: sameNb ? hashes : {} };
       }
 
       case "n2z-remove-mapping":
@@ -4283,9 +4214,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "n2z-reconcile-synced": {
         // Explicit removal check (triggered by the "Check notebook" button).
         // Prunes markers for sources removed in NotebookLM, then returns the
-        // remaining synced item keys from the durable Zotero mapping.
+        // remaining synced markers from the durable Zotero mapping.
         const { tab: recTab } = await resolveNotebookLMTab();
-        const readMappingKeys = async () => {
+        const readMappingHashes = async () => {
           const m = await zoteroRequest("/n2z/mapping", {
             action: "get",
             collectionId: message.collectionId,
@@ -4293,19 +4224,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const sameNb =
             m?.data &&
             (!message.notebookId || m.data.notebookId === message.notebookId);
-          return sameNb ? Object.keys(m.data.syncedItemHashes || {}) : [];
+          return sameNb ? m.data.syncedItemHashes || {} : {};
         };
         // Never probe the tab while a sync is uploading to it — a concurrent
         // scripting read can disrupt the CDP file-chooser handshake.
         if (!recTab || activeSyncs.has(recTab.id)) {
-          return { success: true, data: await readMappingKeys() };
+          return { success: true, data: await readMappingHashes() };
         }
         await reconcileSyncedKeys(
           message.collectionId,
           message.notebookId,
           recTab.id,
         );
-        return { success: true, data: await readMappingKeys() };
+        return { success: true, data: await readMappingHashes() };
       }
 
       case "n2z-clear-sync-state": {

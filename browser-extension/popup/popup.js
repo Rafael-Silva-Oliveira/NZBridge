@@ -946,8 +946,9 @@ async function previewItems(source) {
   const mappingKey = source.tag
     ? syntheticCollectionIdForTag(source.libraryId, source.tag)
     : source.collectionId;
-  const syncedKeys = await getSyncedKeys(mappingKey);
-  const uploadedCount = items.filter((i) => itemGroupUploaded(i, syncedKeys)).length;
+  const syncedMarkers = await getSyncedMarkers(mappingKey);
+  const uploadedCount = items.filter((i) => itemGroupUploaded(i, syncedMarkers))
+    .length;
   const multiCount = items.filter((i) => ensureUnits(i).length > 1).length;
 
   // Summary line
@@ -980,20 +981,20 @@ async function previewItems(source) {
   urlsContainer.innerHTML = "";
 
   if (fileItems.length) {
-    fileCountEl.textContent = groupCountLabel(fileItems, syncedKeys);
+    fileCountEl.textContent = groupCountLabel(fileItems, syncedMarkers);
     groupFiles.classList.remove("hidden");
     for (const item of fileItems) {
-      filesContainer.appendChild(makeItemBlock(item, syncedKeys));
+      filesContainer.appendChild(makeItemBlock(item, syncedMarkers));
     }
   } else {
     groupFiles.classList.add("hidden");
   }
 
   if (urlItems.length) {
-    urlCountEl.textContent = groupCountLabel(urlItems, syncedKeys);
+    urlCountEl.textContent = groupCountLabel(urlItems, syncedMarkers);
     groupUrls.classList.remove("hidden");
     for (const item of urlItems) {
-      urlsContainer.appendChild(makeItemBlock(item, syncedKeys));
+      urlsContainer.appendChild(makeItemBlock(item, syncedMarkers));
     }
   } else {
     groupUrls.classList.add("hidden");
@@ -1006,11 +1007,19 @@ async function previewItems(source) {
   if (checkBtn) checkBtn.disabled = uploadedCount === 0;
 
   // Group select-all checkboxes (default/main attachments only — never the
-  // per-attachment sub-checkboxes; disabled when every item is already uploaded).
-  // Reset to unchecked on each render so a re-render (e.g. after a sync) doesn't
-  // leave them ticked from a previous selection.
-  document.getElementById("select-all-files").checked = false;
-  document.getElementById("select-all-urls").checked = false;
+  // per-attachment sub-checkboxes; disabled when every item is already
+  // uploaded). Their state mirrors the parent checkboxes: mains start
+  // ticked by default, so select-all starts ticked too.
+  const filesParents = filesContainer.querySelectorAll(
+    '.item-row-main > input[type="checkbox"]',
+  );
+  const urlsParents = urlsContainer.querySelectorAll(
+    '.item-row-main > input[type="checkbox"]',
+  );
+  document.getElementById("select-all-files").checked =
+    filesParents.length > 0 && [...filesParents].every((cb) => cb.checked);
+  document.getElementById("select-all-urls").checked =
+    urlsParents.length > 0 && [...urlsParents].every((cb) => cb.checked);
   document.getElementById("select-all-files").disabled =
     !filesContainer.querySelector('.item-row-main > input[type="checkbox"]');
   document.getElementById("select-all-urls").disabled =
@@ -1046,19 +1055,18 @@ async function previewItems(source) {
   updateSyncButtonState();
 }
 
-// Fetches the set of item keys already uploaded to the currently connected
-// notebook. The background reconciles against NotebookLM's live sources first,
-// so markers for sources the user removed are pruned (making them
-// re-uploadable). Empty set when no notebook is open or nothing was synced.
-async function getSyncedKeys(collectionId) {
+// Fetches the per-unit upload markers for items already uploaded to the
+// currently connected notebook: Map(unitKey → marker). A marker carries the
+// uploaded source name ({at, name, label, ...}) — or a legacy bare timestamp
+// for pre-name-capture syncs. The background reads the Zotero mapping, the
+// durable source of truth (lives in Zotero, survives popup reopen, never
+// altered by reading NotebookLM's DOM). Removed-source detection is the
+// separate, explicit "Check notebook" action.
+async function getSyncedMarkers(collectionId) {
   try {
     const tabRes = await sendMessage({ type: "n2z-get-notebooklm-tab" }, 3000);
     const notebookId = tabRes?.success ? tabRes.data?.notebookId : null;
 
-    // Durable source of truth: the Zotero mapping's per-item record. This is
-    // the SAME data the Mappings tab shows, lives in Zotero (survives reopen),
-    // and is never altered by reading NotebookLM's DOM. Removed-source
-    // detection is a separate, explicit action (the "Check notebook" button).
     const res = await sendMessage(
       {
         type: "n2z-get-synced-items",
@@ -1067,21 +1075,22 @@ async function getSyncedKeys(collectionId) {
       },
       5000,
     );
-    if (res?.success && Array.isArray(res.data)) {
+    if (res?.success && res.data && typeof res.data === "object") {
+      const markers = new Map(Object.entries(res.data));
       console.log(
-        `[n2z] Uploaded-item markers (from Zotero mapping): ${res.data.length} key(s)`,
+        `[n2z] Uploaded markers (from Zotero mapping): ${markers.size} unit(s)`,
       );
-      return new Set(res.data);
+      return markers;
     }
-    return new Set();
+    return new Map();
   } catch (e) {
     console.warn("[n2z] Could not load uploaded-item markers:", e);
-    return new Set();
+    return new Map();
   }
 }
 
-function groupCountLabel(items, syncedKeys) {
-  const uploaded = items.filter((i) => itemGroupUploaded(i, syncedKeys)).length;
+function groupCountLabel(items, markers) {
+  const uploaded = items.filter((i) => itemGroupUploaded(i, markers)).length;
   return uploaded > 0
     ? `(${items.length - uploaded} new · ${uploaded} uploaded)`
     : `(${items.length})`;
@@ -1127,10 +1136,43 @@ function unitKeyOf(item, unit) {
   return unit.isDefault ? item.itemKey : item.itemKey + "::" + unit.unitId;
 }
 
-// An item counts as uploaded when ANY of its units is in the synced set —
+// An item counts as uploaded when ANY of its units has an upload marker —
 // a synced main PDF still leaves its supplementary attachments uploadable.
-function itemGroupUploaded(item, syncedKeys) {
-  return ensureUnits(item).some((u) => syncedKeys.has(unitKeyOf(item, u)));
+function itemGroupUploaded(item, markers) {
+  return resolveUploadedUnits(item, markers).size > 0;
+}
+
+// Resolves WHICH units of an item carry upload markers → Map(unit → marker).
+// The default unit's marker key is the BARE itemKey — the same key form
+// NZBridge ≤ 0.4 wrote for whichever attachment it actually uploaded. So a
+// bare marker is attributed by NAME: the unit whose filename matches the
+// marker's recorded upload name gets the ✓ (a v0.4-era DOCX upload shows its
+// ✓ on the DOCX row instead of pretending the main PDF is up, and the main
+// stays selectable). No name match, or a legacy bare-timestamp marker (no
+// name): the default keeps the ✓ (old display) and its tooltip shows what
+// was really uploaded. Per-unit "itemKey::unitId" markers are unambiguous.
+function resolveUploadedUnits(item, markers) {
+  const units = ensureUnits(item);
+  const uploaded = new Map();
+  for (const u of units) {
+    if (u.isDefault) continue; // bare-itemKey marker — resolved by name below
+    const k = unitKeyOf(item, u);
+    if (markers.has(k)) uploaded.set(u, markers.get(k));
+  }
+  const defaultUnit = units.find((u) => u.isDefault) || units[0];
+  const bare = markers.get(item.itemKey);
+  if (bare && typeof bare === "object") {
+    const want = String(bare.name || bare.label || "").trim();
+    const hit = want
+      ? units.find(
+          (u) => !uploaded.has(u) && String(u.filename || "").trim() === want,
+        )
+      : null;
+    uploaded.set(hit || defaultUnit, bare);
+  } else if (bare) {
+    uploaded.set(defaultUnit, bare); // legacy bare timestamp — can't tell which file
+  }
+  return uploaded;
 }
 
 function domainOf(url) {
@@ -1149,15 +1191,30 @@ function fmtSize(bytes) {
 }
 
 /**
- * Builds one item block: the familiar row (checkbox = the MAIN attachment,
- * exactly today's semantics) plus, for multi-attachment items, a chevron
- * that reveals the other attachments with their own checkboxes.
+ * Builds one item block: the row (checkbox = the MAIN attachment, ticked by
+ * default so "Sync" does what a glance suggests — untick the row to upload
+ * only specific extras) plus, for multi-attachment items, a chevron that
+ * reveals the other attachments with their own checkboxes.
  */
-function makeItemBlock(item, syncedKeys) {
+function makeItemBlock(item, markers) {
   const units = ensureUnits(item);
   const defaultUnit = units.find((u) => u.isDefault) || units[0];
   const extras = units.filter((u) => u !== defaultUnit);
-  const defaultUploaded = syncedKeys.has(unitKeyOf(item, defaultUnit));
+  const uploaded = resolveUploadedUnits(item, markers);
+  const defaultUploaded = uploaded.has(defaultUnit);
+  // Tooltip for ✓ rows: shows WHICH file is in the notebook, so a legacy
+  // wrong-file marker (e.g. a v0.4 DOCX upload under the item's key) is
+  // visible instead of silently pretending the main PDF is up.
+  const uploadedLabel = (m) =>
+    m && typeof m === "object" && (m.name || m.label)
+      ? `Already uploaded — source name: ${m.label || m.name}`
+      : "Already uploaded to this notebook";
+  // Full name of the main attachment for hover tooltips. The row label shows
+  // the ITEM title; long titles otherwise hide which FILE is the main one.
+  const mainAttName =
+    defaultUnit.kind === "file"
+      ? defaultUnit.filename || defaultUnit.title
+      : defaultUnit.url || defaultUnit.title;
 
   const block = document.createElement("div");
   block.className = "item-block";
@@ -1177,12 +1234,14 @@ function makeItemBlock(item, syncedKeys) {
     const check = document.createElement("span");
     check.className = "item-check";
     check.textContent = "✓";
-    main.title = "Already uploaded to this notebook";
+    main.title = uploadedLabel(uploaded.get(defaultUnit));
     main.appendChild(check);
   } else {
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = false; // unchecked by default — user picks what to sync
+    // Ticked by default: the main attachment is the usual thing to sync.
+    // Untick the row to upload only some of the extra attachments.
+    cb.checked = true;
     cb.dataset.itemKey = item.itemKey;
     cb.dataset.unitId = defaultUnit.unitId;
     cb.dataset.default = "1"; // parent checkbox IS the default unit
@@ -1191,7 +1250,7 @@ function makeItemBlock(item, syncedKeys) {
   const name = document.createElement("span");
   name.className = "item-row-name";
   name.textContent = item.title || item.url || item.itemKey;
-  name.title = item.title || item.url || "";
+  name.title = `${item.title || item.url || ""}\nMain attachment: ${mainAttName}`;
   main.appendChild(name);
   row.appendChild(main);
 
@@ -1238,18 +1297,19 @@ function makeItemBlock(item, syncedKeys) {
         ? `Main · ${defaultUnit.filename || defaultUnit.title}${defaultUnit.fileSize ? " · " + fmtSize(defaultUnit.fileSize) : ""}`
         : `Main · ${domainOf(defaultUnit.url)}`;
     mainInfo.title =
-      "The attachment Zotero opens for this item — toggled by the row checkbox";
+      `Main attachment: ${mainAttName}\n` +
+      "The attachment Zotero opens for this item — untick the row checkbox to skip it and pick only the extra attachments.";
     subrows.appendChild(mainInfo);
 
     for (const unit of extras) {
-      const uploaded = syncedKeys.has(unitKeyOf(item, unit));
+      const unitUploaded = uploaded.has(unit);
       const sub = document.createElement("label");
-      sub.className = uploaded ? "item-subrow uploaded" : "item-subrow";
-      if (uploaded) {
+      sub.className = unitUploaded ? "item-subrow uploaded" : "item-subrow";
+      if (unitUploaded) {
         const check = document.createElement("span");
         check.className = "item-check";
         check.textContent = "✓";
-        sub.title = "Already uploaded to this notebook";
+        sub.title = uploadedLabel(uploaded.get(unit));
         sub.appendChild(check);
       } else {
         const cb = document.createElement("input");
@@ -1305,16 +1365,20 @@ function getSelectedItemKeys() {
   ).map((cb) => cb.dataset.itemKey);
 }
 
-// Every checked checkbox (parent or sub-row) → canonical unit keys.
-// The default unit keeps the bare itemKey; extras are "itemKey::unitId".
+// Every checked checkbox (parent or sub-row) → EXPLICIT unit keys
+// ("itemKey::unitId"), pinning the exact attachment resolved at RENDER time.
+// The old bare-itemKey form for the default unit let the background re-derive
+// "the default" from a fresh item list at sync time — Zotero's best
+// attachment can settle differently in between (freshly added items), which
+// made a "main" tick upload a different file than the UI showed as Main.
+// Scoped to .item-block so the group select-all checkboxes (no dataset)
+// can't leak garbage keys.
 function getSelectedUnits() {
   return Array.from(
-    document.querySelectorAll('#item-list input[type="checkbox"]:checked'),
-  ).map((cb) =>
-    cb.dataset.default === "1"
-      ? cb.dataset.itemKey
-      : `${cb.dataset.itemKey}::${cb.dataset.unitId}`,
-  );
+    document.querySelectorAll(
+      '#item-list .item-block input[type="checkbox"]:checked',
+    ),
+  ).map((cb) => `${cb.dataset.itemKey}::${cb.dataset.unitId}`);
 }
 
 function updateSyncButtonState() {
@@ -1468,7 +1532,7 @@ function setupEventListeners() {
       const orig = btn.textContent;
       btn.disabled = true;
       btn.textContent = "Checking…";
-      const before = (await getSyncedKeys(mappingKey)).size;
+      const before = (await getSyncedMarkers(mappingKey)).size;
       const rec = await sendMessage(
         {
           type: "n2z-reconcile-synced",
@@ -1484,7 +1548,9 @@ function setupEventListeners() {
         : { collectionId: parseInt(select.value) };
       await previewItems(source);
       const after =
-        rec?.success && Array.isArray(rec.data) ? rec.data.length : before;
+        rec?.success && rec.data && typeof rec.data === "object"
+          ? Object.keys(rec.data).length
+          : before;
       const removed = Math.max(0, before - after);
       resultDiv.classList.remove("hidden");
       resultDiv.className = "result success";

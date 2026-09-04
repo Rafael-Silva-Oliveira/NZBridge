@@ -83,14 +83,26 @@ const sandbox = {
   window: {},
   console,
 };
-let exported = null;
-sandbox.__export = (fn) => (exported = fn);
+const exportedFns = {};
+sandbox.__export = (name, fn) => (exportedFns[name] = fn);
 
 const src = fs.readFileSync(SRC, "utf8");
-vm.runInNewContext(src + "\n;__export(makeItemBlock);", sandbox, {
-  filename: "popup.js",
-});
-assert.strictEqual(typeof exported, "function", "makeItemBlock not exported");
+vm.runInNewContext(
+  src +
+    "\n;__export('makeItemBlock', makeItemBlock);__export('resolveUploadedUnits', resolveUploadedUnits);",
+  sandbox,
+  {
+    filename: "popup.js",
+  },
+);
+const makeItemBlock = exportedFns.makeItemBlock;
+const resolveUploadedUnits = exportedFns.resolveUploadedUnits;
+assert.strictEqual(typeof makeItemBlock, "function", "makeItemBlock not exported");
+assert.strictEqual(
+  typeof resolveUploadedUnits,
+  "function",
+  "resolveUploadedUnits not exported",
+);
 
 // The group select-all checkboxes live inside #item-list too — the per-unit
 // onchange wiring must stay scoped to item/sub-row checkboxes, or it clobbers
@@ -100,6 +112,15 @@ assert.ok(
     '\u0027.item-row-main input[type="checkbox"], .item-subrow input[type="checkbox"]\u0027',
   ),
   "per-unit onchange wiring must be scoped (no bare #item-list input selector)",
+);
+// Selection keys must be EXPLICIT (itemKey::unitId, incl. the default) and
+// scoped to .item-block — the bare-itemKey form let the background re-derive
+// "the default" at sync time and upload a different file than the UI showed.
+assert.ok(
+  src.includes(
+    "'#item-list .item-block input[type=\"checkbox\"]:checked'",
+  ),
+  "getSelectedUnits must be scoped to .item-block checkboxes",
 );
 
 // ─── Build a main + supplementary PDF item ────────────────────────────
@@ -119,7 +140,7 @@ const item = {
   ],
 };
 
-const block = exported(item, new Set());
+const block = makeItemBlock(item, new Map());
 
 // Structure: block > row(div) > [main label (checkbox = default unit), toggle]
 const row = block.children[0];
@@ -130,6 +151,15 @@ const main = row.children[0];
 assert.ok(main.className.includes("item-row-main"));
 assert.strictEqual(main.children[0].dataset.default, "1");
 assert.strictEqual(main.children[0].dataset.unitId, "att-5");
+// Main checkbox defaults ON (user-requested: upload-the-main is the common
+// case; untick the row to upload only extras).
+assert.strictEqual(main.children[0].checked, true, "main checkbox defaults ON");
+// Main-row hover must reveal WHICH FILE is the main attachment — the row
+// label shows the item title, which is not enough to tell attachments apart.
+assert.ok(
+  main.children[1].title.includes("Main attachment: main.pdf"),
+  "main row tooltip names the main attachment file",
+);
 
 const toggle = row.children[1];
 assert.ok(toggle.className.includes("item-attachments"), "toggle button present");
@@ -151,13 +181,22 @@ assert.ok(!subrows.classList.contains("open"), "second click collapses again");
 click(toggle);
 assert.ok(subrows.children[0].className.includes("item-main-info"));
 assert.ok(subrows.children[0].textContent.includes("main.pdf"));
+assert.ok(
+  subrows.children[0].title.includes("Main attachment: main.pdf"),
+  "Main info row tooltip names the full file",
+);
+assert.ok(
+  subrows.children[0].title.includes("untick the row checkbox"),
+  "Main info row tooltip explains how to skip the main attachment",
+);
 const sub = subrows.children[1];
 assert.ok(sub.className.includes("item-subrow"));
 assert.strictEqual(sub.children[0].dataset.unitId, "att-6");
 assert.strictEqual(sub.children[0].dataset.itemKey, "ITEMAA1");
+assert.strictEqual(sub.children[0].checked, false, "extras default OFF");
 
 // ─── Single-unit items stay plain (no toggle at all) ──────────────────
-const single = exported(
+const single = makeItemBlock(
   {
     itemKey: "ITEMBB2",
     title: "Solo",
@@ -170,9 +209,84 @@ const single = exported(
     url: "",
     units: undefined, // legacy shape → single synthesized default unit
   },
-  new Set(),
+  new Map(),
 );
 const singleRow = single.children[0];
 assert.strictEqual(singleRow.children.length, 1, "no toggle for single-unit items");
 
-console.log("popup-block.check: toggle expands/collapses, structure + selectors OK");
+// ─── Legacy wrong-file marker (issue #12 report) ──────────────────────
+// NZBridge ≤ 0.4 stored ONE marker per item (bare itemKey) no matter which
+// attachment was actually uploaded. A DOCX uploaded by 0.4 must show its ✓
+// on the DOCX row — not pretend the main PDF is up — so the main stays
+// selectable and the user can upload it.
+{
+  const multi = {
+    ...item,
+    units: [
+      ...item.units,
+      { unitId: "att-7", kind: "file", attachmentId: 7, title: "Supplement", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", filename: "supplement.docx", fileSize: 999, isDefault: false },
+    ],
+  };
+  const markers = new Map([
+    ["ITEMAA1", { at: 1700000000000, name: "supplement.docx" }], // v0.4 marker
+  ]);
+
+  // Resolution: the bare marker belongs to the DOCX unit, not the default.
+  const resolved = resolveUploadedUnits(multi, markers);
+  const docxUnit = multi.units.find((u) => u.unitId === "att-7");
+  const mainUnit = multi.units.find((u) => u.isDefault);
+  assert.ok(resolved.has(docxUnit), "legacy marker attributed to the DOCX unit");
+  assert.ok(!resolved.has(mainUnit), "main PDF stays selectable");
+
+  // Render: ✓ on the DOCX sub-row, checkbox on the main row.
+  const b2 = makeItemBlock(multi, markers);
+  const r2 = b2.children[0];
+  assert.strictEqual(
+    r2.children[0].children[0].type,
+    "checkbox",
+    "main row shows a checkbox, not a ✓, for a legacy extra-file marker",
+  );
+  assert.strictEqual(
+    r2.children[0].children[0].checked,
+    true,
+    "main checkbox defaults ON when the main is not uploaded",
+  );
+  const subs = b2.children[1];
+  const docxMarkedRow = subs.children.find(
+    (s) => s.children[1] && String(s.children[1].textContent).includes("Supplement"),
+  );
+  assert.ok(docxMarkedRow, "DOCX sub-row found");
+  assert.ok(
+    docxMarkedRow.className.includes("uploaded"),
+    "the ✓ lands on the DOCX row",
+  );
+  assert.ok(
+    docxMarkedRow.title.includes("supplement.docx"),
+    "✓ tooltip names the actually-uploaded source",
+  );
+}
+
+// Marker for the default unit (normal v0.5 case): main row shows ✓ with the
+// uploaded source name in its tooltip.
+{
+  const markers = new Map([
+    ["ITEMAA1", { at: 1700000000000, name: "main.pdf" }],
+  ]);
+  const resolved = resolveUploadedUnits(item, markers);
+  assert.ok(resolved.has(item.units[0]), "default marker stays on the default");
+  assert.ok(!resolved.has(item.units[1]), "extra stays selectable");
+
+  const b3 = makeItemBlock(item, markers);
+  const mainLabel = b3.children[0].children[0];
+  assert.strictEqual(
+    mainLabel.children[0].className,
+    "item-check",
+    "main row shows ✓ when its own marker exists",
+  );
+  assert.ok(
+    mainLabel.title.includes("main.pdf"),
+    "✓ tooltip names the uploaded source",
+  );
+}
+
+console.log("popup-block.check: toggle, structure, selection scoping, legacy markers OK");
