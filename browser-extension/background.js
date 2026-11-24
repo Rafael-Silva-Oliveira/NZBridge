@@ -2439,9 +2439,836 @@ async function cdpEval(tabId, expression) {
 }
 
 // ─── Backward Sync: Note Extraction ─────────────────────────────────
+//
+// Notes have moved out of the Studio panel into the left "Sources" panel in
+// current NotebookLM / Gemini Notebook builds. They are listed as ordinary
+// source rows, optionally nested inside collapsible groups, and can be
+// collapsed into an icon rail. Clicking one opens it in the right-hand viewer
+// (breadcrumb "Studio › Note", banner "Saved responses are view only").
+//
+// `extractNotesFromTab` detects which UI a tab is running and dispatches to the
+// matching extractor. The original Studio-panel extractor is preserved below
+// (`extractNotesFromStudioPanel`) so older builds keep working.
+
+// Last diagnostic line, surfaced by the popup when nothing was extracted.
+let lastNoteExtractionDebug = "";
+
+/** Runs `func` in the tab and returns its serialized result. */
+async function execInTab(tabId, func, args = []) {
+  const res = await chrome.scripting.executeScript({
+    target: { tabId },
+    func,
+    args,
+  });
+  return res?.[0]?.result;
+}
 
 /**
- * Extracts notes from NotebookLM using scripting API.
+ * Stable id derived from the note title. Must match the legacy extractor so a
+ * note imported before the redesign is updated instead of duplicated.
+ */
+function noteIdForTitle(title) {
+  let hash = 0;
+  for (let i = 0; i < title.length; i++) {
+    hash = (hash << 5) - hash + title.charCodeAt(i);
+    hash |= 0;
+  }
+  return "note-" + Math.abs(hash).toString(36);
+}
+
+/**
+ * Entry point for backward sync and the popup.
+ * Picks the extractor that matches the UI of this tab.
+ */
+async function extractNotesFromTab(tabId) {
+  lastNoteExtractionDebug = "";
+
+  let usesSourcesPanel = false;
+  try {
+    usesSourcesPanel = await execInTab(tabId, () => {
+      if (document.querySelector('[id^="source-item-more-button"]')) return true;
+      if (document.querySelector('[id^="mat-expansion-panel-header"]'))
+        return true;
+      return Array.from(document.querySelectorAll("button")).some((b) =>
+        /(expand|collapse)\s+source[s]?\s+panel/i.test(
+          b.getAttribute("aria-label") || "",
+        ),
+      );
+    });
+  } catch {
+    usesSourcesPanel = false;
+  }
+
+  if (usesSourcesPanel) {
+    let notes = [];
+    try {
+      notes = await extractNotesFromSourcePanel(tabId);
+    } catch (e) {
+      console.warn("n2z: Sources-panel note extraction failed:", e);
+      lastNoteExtractionDebug = "sources-panel error: " + e.message;
+    }
+    if (notes.length > 0) return notes;
+
+    // Mixed rollout: a few notes may still be rendered as Studio cards.
+    let hasStudioCards = false;
+    try {
+      hasStudioCards = await execInTab(
+        tabId,
+        () =>
+          !!document.querySelector(
+            ".artifact-title, [class*='artifact-title']",
+          ),
+      );
+    } catch {
+      hasStudioCards = false;
+    }
+    if (!hasStudioCards) return notes;
+  }
+
+  return extractNotesFromStudioPanel(tabId);
+}
+
+/**
+ * New UI: notes live in the Sources panel. Opens each note row, verifies that
+ * the viewer really shows that note, scrapes it, then closes the viewer.
+ */
+async function extractNotesFromSourcePanel(tabId) {
+  // 1. Make the panel visible (it may be an icon rail or a tab in narrow layouts).
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const state = await execInTab(tabId, ensureSourcesPanelVisibleFn);
+    if (state?.ok) break;
+    await sleep(400);
+  }
+  await sleep(500);
+
+  // 2. Expand collapsible groups so nested notes exist in the DOM.
+  const expanded = await execInTab(tabId, expandSourceGroupsFn);
+  const restoreGroups = expanded?.expanded || [];
+  await sleep(700);
+
+  const notes = [];
+  try {
+    const candidates =
+      (await execInTab(tabId, collectSourceNoteCandidatesFn)) || [];
+    lastNoteExtractionDebug = `sources-panel: ${candidates.length} candidate row(s)`;
+
+    for (const card of candidates) {
+      try {
+        const note = await extractOneSourceNote(tabId, card);
+        if (note) notes.push(note);
+      } catch (e) {
+        // One broken row must never abort the whole extraction.
+        lastNoteExtractionDebug += `; "${card.title}": ${e.message}`;
+        try {
+          await execInTab(tabId, closeSourceNoteFn);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  } finally {
+    // Restore the groups the user had collapsed. Purely cosmetic.
+    if (restoreGroups.length > 0) {
+      try {
+        await execInTab(tabId, collapseSourceGroupsFn, [restoreGroups]);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  return notes;
+}
+
+/**
+ * Opens one Sources-panel note row, verifies the viewer belongs to it, scrapes
+ * the body and closes the viewer again. Returns null when the row is not a
+ * note (e.g. a source whose row looked ambiguous).
+ */
+async function extractOneSourceNote(tabId, card) {
+  // The panel can re-collapse whenever a viewer opens.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const state = await execInTab(tabId, ensureSourcesPanelVisibleFn);
+    if (state?.ok) break;
+    await sleep(350);
+  }
+  await execInTab(tabId, expandSourceGroupsFn);
+
+  // Close a previously opened viewer so it can never be mistaken for this
+  // row's content, then take a baseline of the panel.
+  const prior = await execInTab(tabId, readNotePanelFn);
+  if (prior?.noteOpen) {
+    await execInTab(tabId, closeSourceNoteFn);
+    await sleep(500);
+  }
+  const baseline = await execInTab(tabId, readNotePanelFn);
+
+  const opened = await execInTab(tabId, openSourceNoteFn, [card.title]);
+  if (!opened?.ok) {
+    lastNoteExtractionDebug += `; "${card.title}": ${opened?.error || "open-failed"}`;
+    return null;
+  }
+
+  // Wait until the viewer is open AND its content changed (new note).
+  let ready = false;
+  for (let attempt = 0; attempt < 16; attempt++) {
+    await sleep(350);
+    const state = await execInTab(tabId, readNotePanelFn);
+    if (!state?.noteOpen) continue;
+    if (
+      baseline?.noteOpen &&
+      state.head === baseline.head &&
+      state.len === baseline.len
+    )
+      continue;
+    ready = true;
+    break;
+  }
+  if (!ready) {
+    lastNoteExtractionDebug += `; "${card.title}": viewer-not-detected`;
+    await execInTab(tabId, closeSourceNoteFn);
+    await sleep(300);
+    return null;
+  }
+
+  const scraped =
+    (await execInTab(tabId, scrapeSourceNoteFn, [card.title])) || {};
+  if (!scraped.content || scraped.content.length < 20) {
+    lastNoteExtractionDebug += `; "${card.title}": ${scraped.method || "no-content"}`;
+    await execInTab(tabId, closeSourceNoteFn);
+    await sleep(300);
+    return null;
+  }
+
+  await execInTab(tabId, closeSourceNoteFn);
+  await sleep(400);
+
+  return {
+    id: noteIdForTitle(card.title),
+    title: card.title,
+    content: scraped.content,
+    html: scraped.html || "",
+    type: "saved-note",
+    timestamp: new Date().toISOString(),
+    _method: scraped.method || "unknown",
+    _debug: scraped.debug || {},
+  };
+}
+
+// Injected: make the Sources panel visible (expand button or "Sources" tab).
+function ensureSourcesPanelVisibleFn() {
+  const hasList = () =>
+    !!document.querySelector(
+      '[id^="source-item-more-button"], [id^="mat-expansion-panel-header"]',
+    );
+  if (hasList()) return { ok: true, method: "already-visible" };
+
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const expandLabels = [
+    /expand source[s]? panel/,
+    /open source[s]? panel/,
+    /展开来源面板/,
+    /展開來源面板/,
+    /ソースパネルを展開/,
+    /소스 패널 펼치기/,
+    /expandir (el )?panel de fuentes/,
+    /d[ée]velopper le panneau des sources/,
+    /quellenbereich erweitern/,
+    /expandir painel de fontes/,
+    /espandi pannello origini/,
+    /bronpaneel uitvouwen/,
+  ];
+
+  for (const b of Array.from(
+    document.querySelectorAll("button, [role='button']"),
+  )) {
+    const label = norm(b.getAttribute("aria-label") || b.getAttribute("title"));
+    if (!label) continue;
+    if (expandLabels.some((re) => re.test(label))) {
+      b.click();
+      return { ok: true, method: "expand-panel:" + label };
+    }
+  }
+
+  for (const t of Array.from(document.querySelectorAll('[role="tab"]'))) {
+    const txt = norm(t.textContent);
+    if (!/^(sources?|来源|來源|ソース|소스|fuentes|fontes|quellen|bronnen)$/.test(txt))
+      continue;
+    if (t.getAttribute("aria-selected") === "true") continue;
+    t.click();
+    return { ok: true, method: "sources-tab" };
+  }
+
+  return { ok: false, method: "not-found" };
+}
+
+// Injected: expand every collapsed group header, reporting what was expanded.
+function expandSourceGroupsFn() {
+  const headers = Array.from(
+    document.querySelectorAll('[id^="mat-expansion-panel-header"]'),
+  );
+  const expanded = [];
+  headers.forEach((h, i) => {
+    if (h.getAttribute("aria-expanded") !== "false") return;
+    h.click();
+    expanded.push({
+      id: h.id || "idx-" + i,
+      label: (h.getAttribute("aria-label") || h.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 80),
+    });
+  });
+  return { total: headers.length, expanded };
+}
+
+// Injected: collapse the groups the user originally had collapsed.
+function collapseSourceGroupsFn(items) {
+  const list = Array.isArray(items) ? items : [];
+  const byId = new Set(list.map((i) => i && i.id).filter(Boolean));
+  const byLabel = new Set(list.map((i) => i && i.label).filter(Boolean));
+  const headers = Array.from(
+    document.querySelectorAll('[id^="mat-expansion-panel-header"]'),
+  );
+  let collapsed = 0;
+  headers.forEach((h, i) => {
+    const id = h.id || "idx-" + i;
+    const label = (h.getAttribute("aria-label") || h.textContent || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+    if (!byId.has(id) && !byLabel.has(label)) return;
+    if (h.getAttribute("aria-expanded") !== "true") return;
+    h.click();
+    collapsed++;
+  });
+  return { collapsed };
+}
+
+// Injected: list source rows that could be notes (files and URLs excluded).
+// The real note/source decision is made by opening the row and checking the
+// viewer, so a source can never be imported as a note.
+function collectSourceNoteCandidatesFn() {
+  const X = (s) => (s || "").replace(/\s+/g, " ").trim();
+  const UI_LABEL_RE =
+    /^(add sources?|add a source|create note|new note|sources?|notes?|select all|submit|web|fast research|undo or re-label sources|sort sources|customize notebook|share notebook|notebook configuration|settings|collapse source panel|expand source panel|more)$/i;
+
+  const moreButtons = Array.from(
+    document.querySelectorAll('[id^="source-item-more-button"]'),
+  );
+
+  // Fallback anchor: every source row exposes a checkbox labelled
+  // "Select <title>". Used when the overflow-button id is not present (e.g.
+  // Google renamed it) so discovery does not silently return nothing.
+  if (moreButtons.length === 0) {
+    const out = [];
+    const seen = new Set();
+    for (const cb of Array.from(
+      document.querySelectorAll(
+        'input[aria-label^="Select " i], [role="checkbox"][aria-label^="Select " i]',
+      ),
+    )) {
+      if (cb.closest('[id^="mat-expansion-panel-header"]')) continue;
+      const raw = X(cb.getAttribute("aria-label") || "");
+      if (/^select all\b/i.test(raw)) continue;
+      const title = X(raw.replace(/^select\s+/i, ""));
+      if (!title || title.length < 2 || title.length > 200) continue;
+      if (/\.pdf\s*$/i.test(title)) continue;
+      if (/^https?:\/\//i.test(title)) continue;
+      const key = title.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ title, kind: "note", glyph: "" });
+    }
+    return out;
+  }
+
+  // Smallest element that still contains every row's overflow button.
+  let root = moreButtons[0].parentElement;
+  while (
+    root &&
+    root.parentElement &&
+    !moreButtons.every((m) => root.contains(m))
+  ) {
+    root = root.parentElement;
+  }
+  if (!root) root = document;
+
+  const rowFor = (btn) => {
+    let el = btn.parentElement;
+    for (let i = 0; i < 5 && el; i++, el = el.parentElement) {
+      const count = el.querySelectorAll('[id^="source-item-more-button"]').length;
+      if (count === 1) return el;
+      if (count > 1) return null;
+    }
+    return null;
+  };
+  const hasAdjacentMore = (btn) => {
+    let sib = btn.nextElementSibling;
+    for (let i = 0; i < 3 && sib; i++, sib = sib.nextElementSibling) {
+      if ((sib.id || "").startsWith("source-item-more-button")) return true;
+    }
+    return false;
+  };
+  const iconFor = (btn, row) => {
+    const own = btn.querySelector("img, mat-icon, svg");
+    if (own) return own;
+    let sib = btn.previousElementSibling;
+    for (let i = 0; i < 3 && sib; i++, sib = sib.previousElementSibling) {
+      const id = sib.id || "";
+      if (
+        id.startsWith("mat-expansion-panel-header") ||
+        id.startsWith("source-item-more-button")
+      )
+        return null;
+      const tag = (sib.tagName || "").toLowerCase();
+      if (tag === "img" || tag === "mat-icon" || tag === "svg") return sib;
+      if (tag === "button") return null; // previous row's title button
+      const inner = sib.querySelector?.("img, mat-icon, svg");
+      if (inner) return inner;
+    }
+    return row ? row.querySelector("img, mat-icon, svg") : null;
+  };
+
+  const out = [];
+  const seen = new Set();
+  for (const btn of Array.from(root.querySelectorAll("button"))) {
+    const id = btn.id || "";
+    if (
+      id.startsWith("mat-expansion-panel-header") ||
+      id.startsWith("source-item-more-button")
+    )
+      continue;
+    if (btn.closest("mat-checkbox, .mat-mdc-checkbox")) continue;
+    if (btn.getAttribute("role") === "checkbox") continue;
+
+    const row = rowFor(btn);
+    if (!row && !hasAdjacentMore(btn)) continue; // not a source row
+
+    const title = X(btn.getAttribute("aria-label") || btn.textContent);
+    if (!title || title.length < 2 || title.length > 200) continue;
+    if (UI_LABEL_RE.test(title)) continue;
+    if (/\.pdf\s*$/i.test(title)) continue; // PDF attachment
+    if (/^https?:\/\//i.test(title)) continue; // web source
+
+    const icon = iconFor(btn, row);
+    const isImg =
+      !!icon && (icon.tagName === "IMG" || !!icon.querySelector?.("img"));
+    if (isImg) continue; // file / favicon thumbnail
+
+    const key = title.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      title,
+      kind: "note",
+      glyph: X(icon ? icon.textContent : ""),
+    });
+  }
+  return out;
+}
+
+// Injected: click the row whose title matches (exact first, then prefix).
+function openSourceNoteFn(targetTitle) {
+  const X = (s) => (s || "").replace(/\s+/g, " ").trim();
+  const want = X(targetTitle).toLowerCase();
+  const tied = (btn) => {
+    let sib = btn.nextElementSibling;
+    for (let i = 0; i < 3 && sib; i++, sib = sib.nextElementSibling) {
+      if ((sib.id || "").startsWith("source-item-more-button")) return true;
+    }
+    const parent = btn.parentElement;
+    return (
+      !!parent &&
+      parent.querySelectorAll('[id^="source-item-more-button"]').length === 1
+    );
+  };
+
+  let exact = null;
+  let partial = null;
+  const hasMoreAnchors = !!document.querySelector(
+    '[id^="source-item-more-button"]',
+  );
+  for (const b of Array.from(document.querySelectorAll("button"))) {
+    const id = b.id || "";
+    if (
+      id.startsWith("mat-expansion-panel-header") ||
+      id.startsWith("source-item-more-button")
+    )
+      continue;
+    if (b.closest("mat-checkbox, .mat-mdc-checkbox")) continue;
+    const t = X(b.getAttribute("aria-label") || b.textContent).toLowerCase();
+    if (!t) continue;
+    if (hasMoreAnchors && !tied(b)) continue;
+    if (t === want) {
+      exact = b;
+      break;
+    }
+    if (!partial && t.startsWith(want)) partial = b;
+  }
+
+  const target = exact || partial;
+  if (!target) return { ok: false, error: "row-not-found" };
+  const rect = target.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) return { ok: false, error: "row-hidden" };
+  try {
+    target.scrollIntoView({ block: "nearest" });
+  } catch {
+    /* ignore */
+  }
+  target.click();
+  return { ok: true };
+}
+
+// Injected: is a note viewer open, and what does the right-hand panel show?
+function readNotePanelFn() {
+  const X = (s) => (s || "").replace(/\s+/g, " ").trim();
+  const vw = window.innerWidth || document.documentElement.clientWidth;
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  const visible = (el) => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return (
+      r.width > 40 &&
+      r.height > 12 &&
+      r.bottom > 0 &&
+      r.top < vh &&
+      r.right > 0 &&
+      r.left < vw
+    );
+  };
+
+  const EDIT_NOTE_RE =
+    /edit your note|编辑笔记|編輯筆記|メモを編集|ノートを編集|노트 편집|editar (tu |la )?nota|modifier (votre |la )?note|notiz bearbeiten|editar (sua |a )?nota|modifica (la tua )?nota|notitie bewerken/i;
+  const VIEW_ONLY_RE =
+    /saved\s+(responses?|notes?)\s+are\s+(view|read)\s*only|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen/i;
+
+  const editBtn = Array.from(document.querySelectorAll("button")).find(
+    (b) => EDIT_NOTE_RE.test(X(b.textContent)) && visible(b),
+  );
+  const banner = Array.from(document.querySelectorAll("div,span,p")).find(
+    (e) =>
+      VIEW_ONLY_RE.test(X(e.textContent)) &&
+      X(e.textContent).length < 90 &&
+      visible(e),
+  );
+  const crumb = Array.from(document.querySelectorAll("div,span,p,a")).find(
+    (e) =>
+      /^studio\s*[>›»]\s*note/i.test(X(e.textContent)) &&
+      X(e.textContent).length < 60 &&
+      visible(e),
+  );
+
+  // Sample the right-hand column; its text is the viewer's signature.
+  let head = "";
+  let len = 0;
+  for (const fy of [0.28, 0.5, 0.72]) {
+    const el = document.elementFromPoint(
+      Math.round(vw * 0.78),
+      Math.round(vh * fy),
+    );
+    if (!el) continue;
+    let node = el;
+    for (let i = 0; i < 7 && node.parentElement; i++) node = node.parentElement;
+    const t = X(node.innerText || "");
+    if (t.length > len) {
+      len = t.length;
+      head = t.slice(0, 120);
+    }
+  }
+
+  return {
+    noteOpen: !!(editBtn || banner || crumb),
+    hasEdit: !!editBtn,
+    hasBanner: !!banner,
+    hasCrumb: !!crumb,
+    head,
+    len,
+  };
+}
+
+// Injected: close the note viewer (button, then breadcrumb, then Escape).
+function closeSourceNoteFn() {
+  const X = (s) => (s || "").replace(/\s+/g, " ").trim();
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 8 && r.height > 8 && r.top < vh && r.bottom > 0;
+  };
+
+  const crumb = Array.from(document.querySelectorAll("div,span,p,a")).find(
+    (e) =>
+      /^studio\s*[>›»]\s*note/i.test(X(e.textContent)) &&
+      X(e.textContent).length < 60 &&
+      visible(e),
+  );
+  let scope = crumb;
+  for (let i = 0; i < 8 && scope && scope.parentElement; i++)
+    scope = scope.parentElement;
+
+  const tokens =
+    /^(close|back|arrow_back|close_fullscreen|返回|关闭|關閉|戻る|閉じる|뒤로|닫기|volver|cerrar|retour|fermer|zurück|schließen|voltar|fechar)$/i;
+  for (const b of Array.from(
+    (scope || document).querySelectorAll("button, [role='button']"),
+  ).filter(visible)) {
+    const label = X(
+      b.getAttribute("aria-label") ||
+        b.getAttribute("title") ||
+        b.textContent,
+    );
+    if (tokens.test(label)) {
+      b.click();
+      return { ok: true, method: "button:" + label };
+    }
+  }
+
+  const studioLink = Array.from(
+    (scope || document).querySelectorAll("a, button, [role='link']"),
+  ).find((el) => X(el.textContent).toLowerCase() === "studio");
+  if (studioLink) {
+    studioLink.click();
+    return { ok: true, method: "breadcrumb" };
+  }
+
+  document.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      code: "Escape",
+      bubbles: true,
+    }),
+  );
+  return { ok: false, method: "escape" };
+}
+
+// Injected: scrape the open note's body (citations normalized, chrome removed).
+function scrapeSourceNoteFn(noteTitle) {
+  const X = (s) => (s || "").replace(/\s+/g, " ").trim();
+  const isIconElement = (el) => {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    const tag = (el.tagName || "").toLowerCase();
+    const cls = (el.className || "").toString().toLowerCase();
+    return (
+      tag === "mat-icon" ||
+      tag === "svg" ||
+      cls.includes("material-icons") ||
+      cls.includes("mat-icon")
+    );
+  };
+  const getCleanText = (node) => {
+    let out = "";
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) out += child.textContent;
+      else if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.tagName === "STYLE" || child.tagName === "SCRIPT") continue;
+        if (isIconElement(child)) continue;
+        const block =
+          /^(P|DIV|LI|UL|OL|H1|H2|H3|H4|H5|H6|SECTION|ARTICLE|BLOCKQUOTE|PRE|TD|TH|TR|BR)$/.test(
+            child.tagName,
+          );
+        if (block) out += "\n";
+        out += getCleanText(child);
+        if (block) out += "\n";
+      }
+    }
+    return out;
+  };
+  // Collapse runs of spaces but keep the block structure as line breaks.
+  const normalizeText = (s) =>
+    (s || "")
+      .split("\n")
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .join("\n");
+  // NotebookLM citation chips -> readable "(12,13)" markers.
+  const normalizeCitations = (clone) => {
+    const buttons = Array.from(
+      clone.querySelectorAll(
+        "button.xap-inline-dialog, button[class*='xap-inline-dialog']",
+      ),
+    );
+    const visited = new Set();
+    for (const btn of buttons) {
+      if (visited.has(btn)) continue;
+      const group = [btn];
+      visited.add(btn);
+      let sib = btn.nextSibling;
+      while (sib) {
+        if (sib.nodeType === Node.TEXT_NODE && !sib.textContent.trim()) {
+          sib = sib.nextSibling;
+          continue;
+        }
+        if (
+          sib.nodeType === Node.ELEMENT_NODE &&
+          sib.matches?.(
+            "button.xap-inline-dialog, button[class*='xap-inline-dialog']",
+          )
+        ) {
+          group.push(sib);
+          visited.add(sib);
+          sib = sib.nextSibling;
+          continue;
+        }
+        break;
+      }
+      const nums = group
+        .map((b) => (b.textContent || "").trim())
+        .filter((t) => /^\d{1,4}$/.test(t));
+      const prev = btn.previousSibling;
+      const prevEndsWS =
+        prev &&
+        prev.nodeType === Node.TEXT_NODE &&
+        /\s$/.test(prev.textContent || "");
+      const replacement = document.createTextNode(
+        nums.length ? (prevEndsWS ? "" : " ") + "(" + nums.join(",") + ")" : "",
+      );
+      btn.parentNode.insertBefore(replacement, btn);
+      for (const b of group) b.remove();
+    }
+  };
+  const cleanClone = (node) => {
+    const clone = node.cloneNode(true);
+    clone
+      .querySelectorAll("style, script, mat-icon, .material-icons, svg")
+      .forEach((s) => s.remove());
+    normalizeCitations(clone);
+    clone.querySelectorAll("button").forEach((b) => b.remove());
+    return clone;
+  };
+  const CHROME_RE =
+    /edit your note|saved\s+(responses?|notes?)\s+are\s+(view|read)\s*only|已保存.*(只读|查看)|已儲存.*(唯讀|查看)|読み取り専用|읽기 전용|solo lectura|lecture seule|schreibgeschützt|somente leitura|sola lettura|alleen-lezen|convert to source|add to note|copy summary|good summary|bad summary|save to note/i;
+  const EDIT_NOTE_RE =
+    /edit your note|编辑笔记|編輯筆記|メモを編集|ノートを編集|노트 편집|editar (tu |la )?nota|modifier (votre |la )?note|notiz bearbeiten|editar (sua |a )?nota|modifica (la tua )?nota|notitie bewerken/i;
+
+  const vw = window.innerWidth || document.documentElement.clientWidth;
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  const visible = (el) => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return (
+      r.width > 40 &&
+      r.height > 12 &&
+      r.bottom > 0 &&
+      r.top < vh &&
+      r.right > 0 &&
+      r.left < vw
+    );
+  };
+  const climb = (start, minW, minH, steps) => {
+    let el = start;
+    for (let i = 0; i < steps; i++) {
+      if (!el || !el.parentElement) break;
+      el = el.parentElement;
+      const r = el.getBoundingClientRect();
+      if (r.width >= minW && r.height >= minH) break;
+    }
+    return el;
+  };
+
+  const debug = {};
+  let panel = null;
+  const crumb = Array.from(document.querySelectorAll("div,span,p,a")).find(
+    (e) =>
+      /^studio\s*[>›»]\s*note/i.test(X(e.textContent)) &&
+      X(e.textContent).length < 60 &&
+      visible(e),
+  );
+  if (crumb) {
+    panel = climb(crumb, 320, 240, 10);
+    debug.panelFrom = "breadcrumb";
+  }
+  if (!panel) {
+    const editBtn = Array.from(document.querySelectorAll("button")).find(
+      (b) => EDIT_NOTE_RE.test(X(b.textContent)) && visible(b),
+    );
+    if (editBtn) {
+      panel = climb(editBtn, 320, 240, 10);
+      debug.panelFrom = "edit-button";
+    }
+  }
+  if (!panel) {
+    panel = climb(
+      document.elementFromPoint(
+        Math.round(vw * 0.78),
+        Math.round(vh * 0.35),
+      ),
+      320,
+      240,
+      8,
+    );
+    debug.panelFrom = "viewport";
+  }
+  debug.panelFound = !!panel;
+  if (!panel) return { content: "", html: "", method: "no-panel", debug };
+
+  const blocks = [];
+  panel.querySelectorAll("div, p, section, article, li, td").forEach((el) => {
+    if (el.closest("chat-panel")) return;
+    const t = X(el.innerText || el.textContent);
+    if (t.length < 60) return;
+    if (CHROME_RE.test(t) && t.length < 200) return;
+    blocks.push({ el, len: t.length });
+  });
+  blocks.sort((a, b) => b.len - a.len);
+
+  const titleNorm = X(noteTitle);
+  const titleLower = titleNorm.toLowerCase();
+  // Drop the note's own heading so the imported note does not repeat its title.
+  const stripTitle = (clone) => {
+    if (!titleLower) return;
+    for (const el of Array.from(
+      clone.querySelectorAll("h1, h2, h3, h4, [role='heading'], div, span"),
+    )) {
+      if (X(el.textContent).toLowerCase() !== titleLower) continue;
+      el.remove();
+      break;
+    }
+  };
+  const bodyText = (clone) => {
+    let text = normalizeText(getCleanText(clone));
+    if (titleLower && text.toLowerCase().startsWith(titleLower)) {
+      text = text.slice(titleNorm.length).replace(/^\s+/, "");
+    }
+    return text;
+  };
+
+  for (const block of blocks) {
+    const clone = cleanClone(block.el);
+    stripTitle(clone);
+    const text = bodyText(clone);
+    if (text.length < 40) continue;
+    if (/edit your note|saved responses? are (view|read) only/i.test(text))
+      continue;
+    if (text.length < 30) continue;
+    debug.blockLen = text.length;
+    return {
+      content: text,
+      html: clone.innerHTML.trim(),
+      method: "panel-body",
+      debug,
+    };
+  }
+
+  const clone = cleanClone(panel);
+  stripTitle(clone);
+  const text = bodyText(clone);
+  if (text.length >= 30) {
+    debug.blockLen = text.length;
+    return {
+      content: text,
+      html: clone.innerHTML.trim(),
+      method: "panel-all",
+      debug,
+    };
+  }
+  return { content: "", html: "", method: "no-content-found", debug };
+}
+
+// ─── Legacy extractor: notes rendered as Studio cards ───────────────
+
+/**
+ * Extracts notes from older NotebookLM builds, where saved notes live in the
+ * Studio panel as `.artifact-title` cards.
  * Step 1: Find all note cards in the right panel.
  * Step 2: Click each card to open it and scrape the full content.
  */
@@ -2501,7 +3328,7 @@ function ensureStudioVisibleFn() {
   return false;
 }
 
-async function extractNotesFromTab(tabId) {
+async function extractNotesFromStudioPanel(tabId) {
   // Step 0: Ensure the Studio panel (which holds the note cards) is visible
   // before scanning. In the collapsed/tab layout Studio is a tab that must be
   // clicked, and Angular may take a moment to render the note cards — so we
@@ -4362,7 +5189,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             success: true,
             data: notes,
             notebookId,
-            debug: notes.length === 0 ? `Page: ${nlmTab.title}` : undefined,
+            debug:
+              notes.length === 0
+                ? (lastNoteExtractionDebug || `Page: ${nlmTab.title}`).slice(
+                    0,
+                    300,
+                  )
+                : undefined,
           };
         } catch (e) {
           return { success: false, error: e.message };

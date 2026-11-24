@@ -206,7 +206,10 @@
         <div class="prereq-body" id="prereq-body-import">
           <ol class="prereq-list">
             <li>Open NotebookLM and enter the target notebook page.</li>
-            <li>Make sure the NotebookLM Studio panel is available.</li>
+            <li>
+              Make sure the notebook's Sources panel is visible — that is where
+              notes are listed (collapsed groups are expanded automatically).
+            </li>
             <li>Select the Zotero library and target collection.</li>
             <li>
               Click Find Text Notes, then import the selected notes.
@@ -293,8 +296,32 @@
 
       <div class="update-section">
         <h3 class="update-version">
-          v0.5.1 <span class="update-tag current">Current</span>
+          v0.6.0 <span class="update-tag current">Current</span>
         </h3>
+        <ul class="update-list">
+          <li>
+            Notes are now picked up from where NotebookLM lists them today —
+            the left <strong>Sources</strong> panel — including notes inside
+            collapsible groups. Groups can stay collapsed: they are opened for
+            the scan and put back the way you left them
+          </li>
+          <li>
+            Also works with the Sources panel collapsed to the icon rail, and
+            in the narrow/tabbed layout — the panel is expanded automatically
+          </li>
+          <li>
+            Each row is opened and checked before import, so PDF and web
+            sources are never imported as notes
+          </li>
+          <li>
+            Notebooks that still list notes in the Studio panel keep using the
+            original extractor, unchanged
+          </li>
+        </ul>
+      </div>
+
+      <div class="update-section">
+        <h3 class="update-version">v0.5.1</h3>
         <ul class="update-list">
           <li>
             Every attachment is now its own checkbox row: expanding an item

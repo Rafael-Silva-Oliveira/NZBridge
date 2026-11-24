@@ -49,7 +49,9 @@ NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/
 - **50-source limit** — Warns if a collection exceeds NotebookLM's per-notebook limit
 
 ### Backward Sync (NotebookLM -> Zotero)
-- **Note extraction** — Scrapes saved notes from NotebookLM's Studio panel
+- **Note extraction** — Finds saved notes in the Sources panel where current builds keep them (including notes nested in auto-labelled groups), and in the Studio panel on older builds
+- **Collapsed layouts** — Expands a collapsed Sources rail or tabbed layout before scanning, then restores your group state
+- **Verified rows** — Each candidate is opened and checked before import, so PDF/URL sources are never imported as notes
 - **Rich content** — Captures full note body text, not just titles
 - **Smart navigation** — Clicks into each note's detail view, scrapes content, then navigates back
 - **Parent items** — Creates proper Zotero document items (compatible with Notion sync using tools such as Notero)
@@ -172,14 +174,14 @@ Upload PDFs and URLs from a Zotero collection as sources in a NotebookLM noteboo
 
 ### Backward Sync — Pull notes from NotebookLM to Zotero
 
-Extract saved notes from NotebookLM's Studio panel and import them into Zotero as document items with child notes.
+Extract saved notes from NotebookLM and import them into Zotero as document items with child notes.
 
-1. Open a NotebookLM notebook that has **saved notes** in the Studio panel
+1. Open a NotebookLM notebook that has **saved notes**. Current builds list them in the **Sources** panel (sometimes nested inside auto-labelled groups); older builds show them in the **Studio** panel
 2. Click the **NZBridge extension icon**
 3. Go to the **"To Zotero"** tab
 4. Select a **target Zotero collection** from the dropdown
 5. Optionally add **custom tags** (comma-separated)
-6. Click **"Find Text Notes"** — NZBridge will scan the Studio panel for saved notes
+6. Click **"Find Text Notes"** — NZBridge scans the Sources panel (expanding collapsed groups) or the Studio panel for saved notes
 7. Select or deselect individual notes as needed
 
    ![Found notes in the "To Zotero" tab](docs/06-backward-sync-notes.png)
@@ -245,7 +247,7 @@ No build step required — load `browser-extension/` directly as an unpacked ext
 | "Cannot connect to Zotero" error | Check that no firewall is blocking `localhost:23119`. On Chrome/Edge 142+, see **"Local Network Access"** below |
 | Collections won't load / sync times out | Almost always the **"Local Network Access"** block below (Chrome/Edge 142+) |
 | PDFs not uploading | Ensure the NotebookLM tab is active and the notebook is open |
-| No notes found during import | Open the Studio panel in NotebookLM and make sure you have saved notes (not just chat responses) |
+| No notes found during import | Make sure the notebook has saved notes (not just chat responses). In current NotebookLM they are listed in the Sources panel; in older builds in the Studio panel |
 | Sources exceed 50 limit | Split your Zotero collection into smaller sub-collections |
 
 ### Chrome/Edge 142+ blocks the Zotero connection (Local Network Access)
