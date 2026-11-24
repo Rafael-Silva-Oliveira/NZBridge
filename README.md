@@ -157,7 +157,7 @@ Upload PDFs and URLs from a Zotero collection as sources in a NotebookLM noteboo
 
 5. Review the item list — PDFs and URLs are shown in separate groups. Main attachments are pre-ticked; untick any you do not want to upload. Uploaded items show a ✓ — hover it to see which source name is in the notebook
 
-   ![NZBridge popup — collection selected, items ready to sync](docs/01-forward-sync-ready.png)
+   ![NZBridge popup — collection selected, items ready to sync](docs/16-forward-sync-items.png)
 
    Items with multiple attachments show a ▸ — expand to see every attachment as its own checkbox row (main labeled "Main ·"). Untick the main there to upload only its other attachments. Your selection is kept across syncs, and "Check notebook" re-renders it
 
@@ -193,7 +193,7 @@ Extract saved notes from NotebookLM and import them into Zotero as document item
 6. Click **"Find Text Notes"** — NZBridge scans the Sources panel (expanding collapsed groups) or the Studio panel for saved notes
 7. Select or deselect individual notes as needed
 
-   ![Notes found in the "To Zotero" tab, ready to import](docs/06-backward-sync-notes.png)
+   ![Notes found in the "To Zotero" tab, ready to import](docs/17-backward-sync-notes.png)
 
 8. Click **"Import Selected"**
 9. Each note appears in Zotero as a **Document** parent item with a child note containing the full content
