@@ -49,7 +49,7 @@ NZBridge enables **bidirectional sync** between [Zotero](https://www.zotero.org/
 - **50-source limit** — Warns if a collection exceeds NotebookLM's per-notebook limit
 
 ### Backward Sync (NotebookLM -> Zotero)
-- **Note extraction** — Finds saved notes in the Sources panel where current builds keep them (including notes nested in auto-labelled groups), and in the Studio panel on older builds
+- **Note extraction** — Finds saved notes in the Sources panel where current builds keep them (including notes inside collapsible groups), and in the Studio panel on older builds
 - **Collapsed layouts** — Expands a collapsed Sources rail or tabbed layout before scanning, then restores your group state
 - **Verified rows** — Each candidate is opened and checked before import, so PDF/URL sources are never imported as notes
 - **Rich content** — Captures full note body text, not just titles
@@ -138,6 +138,12 @@ The plugin starts a local HTTP server automatically whenever Zotero is running. 
 
 **Note**: If you are using an external storage other than Zoteros default, I recommend using [ZotMoov](https://github.com/wileyyugioh/zotmoov) to sync your collections across devices. It is also highly recommended to have the PDFs as attachments, as websites may have bot detection and will not render the PDFs.
 
+The popup has four tabs — **To NotebookLM**, **To Zotero**, **Mappings** and **Updates**:
+
+<p align="center">
+  <img src="docs/15-nzbridge-popup.png" alt="The NZBridge popup" width="560">
+</p>
+
 ### Forward Sync — Push sources from Zotero to NotebookLM
 
 Upload PDFs and URLs from a Zotero collection as sources in a NotebookLM notebook.
@@ -145,22 +151,25 @@ Upload PDFs and URLs from a Zotero collection as sources in a NotebookLM noteboo
 1. Make sure **Zotero is running** with the NZBridge plugin installed
 2. Open [NotebookLM](https://notebooklm.google.com/) in your browser and create or open a notebook
 3. Click the **NZBridge extension icon** in your toolbar
-4. In the **"To NotebookLM"** tab, select a Zotero collection from the dropdown
-5. Review the item list — PDFs and URLs are shown in separate groups. Main attachments are pre-ticked; untick any you do not want to upload. Items with multiple attachments show a ▸ — expand to see every attachment as a checkbox row (main labeled "Main ·"). Uploaded items show a ✓ — hover it to see which source name is in the notebook
+4. In the **"To NotebookLM"** tab, pick a library and select a Zotero **collection** — or switch **Search by** to **Tags** and type a tag (e.g. `/unread`) to sync everything carrying it
 
-   ![NZBridge popup — collection selected, ready to sync](docs/01-forward-sync-ready.png)
+   ![Choosing what to sync by Zotero tag](docs/14-search-by-tags.png)
+
+5. Review the item list — PDFs and URLs are shown in separate groups. Main attachments are pre-ticked; untick any you do not want to upload. Uploaded items show a ✓ — hover it to see which source name is in the notebook
+
+   ![NZBridge popup — collection selected, items ready to sync](docs/01-forward-sync-ready.png)
+
+   Items with multiple attachments show a ▸ — expand to see every attachment as its own checkbox row (main labeled "Main ·"). Untick the main there to upload only its other attachments. Your selection is kept across syncs, and "Check notebook" re-renders it
+
+   ![Expanding an item to choose individual attachments](docs/13-attachment-selection.png)
 
 6. Click **"Sync to NotebookLM"** — a live progress bar shows each file being uploaded
-
-   ![Sync in progress](docs/03-forward-sync-progress.png)
 
 7. NZBridge will automatically:
    - Name the notebook after your Zotero collection (if untitled)
    - Upload local PDFs via drag-and-drop
    - Paste URLs as web sources in batch
    - Skip any items already synced
-
-   ![Sync complete — 3 items synced](docs/02-forward-sync-done.png)
 
 8. Your sources now appear in NotebookLM, ready for AI-powered analysis
 
@@ -176,15 +185,15 @@ Upload PDFs and URLs from a Zotero collection as sources in a NotebookLM noteboo
 
 Extract saved notes from NotebookLM and import them into Zotero as document items with child notes.
 
-1. Open a NotebookLM notebook that has **saved notes**. Current builds list them in the **Sources** panel (sometimes nested inside auto-labelled groups); older builds show them in the **Studio** panel
+1. Open a NotebookLM notebook that has **saved notes**. Current builds list them in the **Sources** panel (sometimes inside collapsible groups); older builds show them in the **Studio** panel
 2. Click the **NZBridge extension icon**
 3. Go to the **"To Zotero"** tab
 4. Select a **target Zotero collection** from the dropdown
-5. Optionally add **custom tags** (comma-separated)
+5. Optionally add **custom tags** — type a tag and pick **Create "…"** to add a new one, or choose an existing tag
 6. Click **"Find Text Notes"** — NZBridge scans the Sources panel (expanding collapsed groups) or the Studio panel for saved notes
 7. Select or deselect individual notes as needed
 
-   ![Found notes in the "To Zotero" tab](docs/06-backward-sync-notes.png)
+   ![Notes found in the "To Zotero" tab, ready to import](docs/06-backward-sync-notes.png)
 
 8. Click **"Import Selected"**
 9. Each note appears in Zotero as a **Document** parent item with a child note containing the full content
