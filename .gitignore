@@ -8,3 +8,4 @@ node_modules/
 Thumbs.db
 dist/
 build/
+NZBridge-browser-extension-v*/
